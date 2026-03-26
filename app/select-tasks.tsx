@@ -74,6 +74,7 @@ export default function SelectTasksScreen() {
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(true);
 
+  // hi
   // FIX: remember selection + finalized tasks
   // If circle_tasks already exists -> go /circle-home
   // Else if this user has a row in circle_task_selections -> skip this screen -> go /loading
