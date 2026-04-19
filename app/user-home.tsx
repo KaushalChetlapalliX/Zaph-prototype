@@ -3,28 +3,21 @@ import {
   View,
   Text,
   Pressable,
-  SafeAreaView,
   StyleSheet,
-  FlatList,
   ScrollView,
+  Animated,
+  Easing,
 } from "react-native";
-import { router } from "expo-router";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import Svg, { Circle as SvgCircle } from "react-native-svg";
 import { supabase } from "../src/lib/supabase";
-import Svg, { Circle } from "react-native-svg";
-
-const PRIMARY = "#8359E3";
-const BG = "#F8EEFF";
-const BORDER = "#000000";
-
-type CircleMini = { id: string; name: string | null; code: string | number | null };
-
-type CircleTaskRow = { circle_id: string; position: number; task_id: string };
-type TaskRow = { id: string; title: string };
+import { TabBar } from "../src/components/TabBar";
+import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
 
 type TodayTaskItem = {
-  key: string; // circleId:taskId
+  key: string;
   circleId: string;
   circleName: string;
   title: string;
@@ -32,6 +25,13 @@ type TodayTaskItem = {
 };
 
 const FIRST_NAME_KEY = "profileFirstName";
+const POINTS_PER_TASK = 5;
+
+const RING_SIZE = 112;
+const RING_STROKE = 9;
+const RING_RADIUS = (RING_SIZE - RING_STROKE) / 2;
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+const AnimatedCircle = Animated.createAnimatedComponent(SvgCircle);
 
 function startOfDayLocal(d = new Date()) {
   const x = new Date(d);
@@ -43,18 +43,44 @@ function endOfDayLocal(d = new Date()) {
   x.setHours(23, 59, 59, 999);
   return x;
 }
+function startOfWeekUTC(d = new Date()) {
+  const x = new Date(
+    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()),
+  );
+  const day = x.getUTCDay();
+  const daysSinceMonday = (day + 6) % 7;
+  x.setUTCDate(x.getUTCDate() - daysSinceMonday);
+  x.setUTCHours(0, 0, 0, 0);
+  return x;
+}
+function endOfWeekUTC(d = new Date()) {
+  const s = startOfWeekUTC(d);
+  const e = new Date(s);
+  e.setUTCDate(e.getUTCDate() + 7);
+  return e;
+}
 
 export default function UserHome() {
   const [firstName, setFirstName] = useState<string>("");
   const [loading, setLoading] = useState(true);
 
   const [todayTasks, setTodayTasks] = useState<TodayTaskItem[]>([]);
-  const [progressPct, setProgressPct] = useState<number>(0);
-
-  const [streakDays, setStreakDays] = useState<number>(0);
   const [weeklyPoints, setWeeklyPoints] = useState<number>(0);
+  const [circleCount, setCircleCount] = useState<number>(0);
+  const [showAllTasks, setShowAllTasks] = useState<boolean>(false);
 
   const inFlightRef = useRef(false);
+  const mountAnim = useRef(new Animated.Value(0)).current;
+  const ringAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(mountAnim, {
+      toValue: 1,
+      duration: 520,
+      easing: Easing.out(Easing.exp),
+      useNativeDriver: true,
+    }).start();
+  }, [mountAnim]);
 
   useEffect(() => {
     let alive = true;
@@ -63,7 +89,9 @@ export default function UserHome() {
       try {
         const cached = await AsyncStorage.getItem(FIRST_NAME_KEY);
         if (alive && cached && cached.trim()) setFirstName(cached.trim());
-      } catch {}
+      } catch {
+        // ignore cache read failure
+      }
 
       const { data: userData } = await supabase.auth.getUser();
       const user = userData.user;
@@ -78,13 +106,18 @@ export default function UserHome() {
         .eq("id", uid)
         .maybeSingle();
 
-      const p = (profile as any)?.first_name;
-      if (typeof p === "string" && p.trim()) next = p.trim();
+      const profileRow = (profile ?? {}) as { first_name?: string | null };
+      if (profileRow.first_name && profileRow.first_name.trim()) {
+        next = profileRow.first_name.trim();
+      }
 
       if (!next) {
-        const meta = (user.user_metadata as any) || {};
-        const m = meta.first_name || meta.firstName || meta.name;
-        if (typeof m === "string" && m.trim()) next = m.trim();
+        const meta = (user.user_metadata ?? {}) as Record<
+          string,
+          string | undefined
+        >;
+        const m = meta.first_name ?? meta.firstName ?? meta.name ?? "";
+        if (m.trim()) next = m.trim();
       }
 
       if (!next || !alive) return;
@@ -92,7 +125,9 @@ export default function UserHome() {
       setFirstName((prev) => (prev === next ? prev : next));
       try {
         await AsyncStorage.setItem(FIRST_NAME_KEY, next);
-      } catch {}
+      } catch {
+        // ignore cache write failure
+      }
     };
 
     loadFirstName();
@@ -115,13 +150,14 @@ export default function UserHome() {
         if (!uid) {
           if (!alive) return;
           setTodayTasks([]);
-          setProgressPct(0);
-          setStreakDays(0);
           setWeeklyPoints(0);
+          setCircleCount(0);
           setLoading(false);
           return;
         }
 
+        // circle_members join returns one row per membership; circles comes back
+        // as an object or array depending on schema version — normalize below.
         const { data: memberRows, error: mErr } = await supabase
           .from("circle_members")
           .select("circle_id, circles ( id, name, code )")
@@ -131,17 +167,32 @@ export default function UserHome() {
 
         if (mErr || !memberRows || memberRows.length === 0) {
           setTodayTasks([]);
-          setProgressPct(0);
-          setStreakDays(0);
           setWeeklyPoints(0);
+          setCircleCount(0);
           setLoading(false);
           return;
         }
 
-        const circles: CircleMini[] = (memberRows as any[])
+        type CircleMini = {
+          id: string;
+          name: string | null;
+          code: string | number | null;
+        };
+        type MemberRow = {
+          circle_id: string;
+          circles: CircleMini | CircleMini[] | null;
+        };
+
+        const rows = memberRows as unknown as MemberRow[];
+
+        const circles: CircleMini[] = rows
           .map((r) => (Array.isArray(r.circles) ? r.circles[0] : r.circles))
-          .filter(Boolean)
-          .map((c: any) => ({ id: String(c.id), name: c.name ?? null, code: c.code ?? null }));
+          .filter((c): c is CircleMini => c != null)
+          .map((c) => ({
+            id: String(c.id),
+            name: c.name ?? null,
+            code: c.code ?? null,
+          }));
 
         const circleIds = circles.map((c) => c.id);
         const circleNameById: Record<string, string> = {};
@@ -151,7 +202,7 @@ export default function UserHome() {
           circleNameById[c.id] = nm || (cd ? `Circle ${cd}` : "Circle");
         }
 
-        const { data: ctRows, error: ctErr } = await supabase
+        const { data: ctRows } = await supabase
           .from("circle_tasks")
           .select("circle_id, position, task_id")
           .in("circle_id", circleIds)
@@ -160,61 +211,54 @@ export default function UserHome() {
 
         if (!alive) return;
 
-        if (ctErr || !ctRows || ctRows.length === 0) {
-          setTodayTasks([]);
-          setProgressPct(0);
-          setStreakDays(0);
-          setWeeklyPoints(0);
-          setLoading(false);
-          return;
-        }
-
-        const rows = ctRows as any as CircleTaskRow[];
-        const taskIds = Array.from(new Set(rows.map((r) => r.task_id)));
-
-        const { data: tRows, error: tErr } = await supabase
-          .from("tasks")
-          .select("id, title")
-          .in("id", taskIds);
-
-        if (!alive) return;
-
-        if (tErr || !tRows) {
-          setTodayTasks([]);
-          setProgressPct(0);
-          setStreakDays(0);
-          setWeeklyPoints(0);
-          setLoading(false);
-          return;
-        }
+        type CircleTaskRow = {
+          circle_id: string;
+          position: number;
+          task_id: string;
+        };
+        const ctList = (ctRows ?? []) as unknown as CircleTaskRow[];
+        const taskIds = Array.from(new Set(ctList.map((r) => r.task_id)));
 
         const titleById: Record<string, string> = {};
-        for (const t of tRows as any as TaskRow[]) titleById[t.id] = String(t.title ?? "").trim();
-
-        const dayStart = startOfDayLocal();
-        const dayEnd = endOfDayLocal();
-
-        const doneSet = new Set<string>();
-        const { data: doneRows, error: doneErr } = await supabase
-          .from("task_completions")
-          .select("circle_id, task_id, completed_at")
-          .eq("user_id", uid)
-          .gte("completed_at", dayStart.toISOString())
-          .lte("completed_at", dayEnd.toISOString());
-
-        if (!doneErr && doneRows) {
-          for (const r of doneRows as any[]) {
-            const key = `${String(r.circle_id)}:${String(r.task_id)}`;
-            doneSet.add(key);
+        if (taskIds.length > 0) {
+          const { data: tRows } = await supabase
+            .from("tasks")
+            .select("id, title")
+            .in("id", taskIds);
+          if (tRows) {
+            type TaskRow = { id: string; title: string };
+            for (const t of tRows as unknown as TaskRow[]) {
+              titleById[t.id] = String(t.title ?? "").trim();
+            }
           }
         }
 
-        const nextTasks: TodayTaskItem[] = rows
+        const dayStart = startOfDayLocal();
+        const dayEnd = endOfDayLocal();
+        const doneSet = new Set<string>();
+
+        if (taskIds.length > 0) {
+          const { data: doneRows } = await supabase
+            .from("task_completions")
+            .select("circle_id, task_id, completed_at")
+            .eq("user_id", uid)
+            .gte("completed_at", dayStart.toISOString())
+            .lte("completed_at", dayEnd.toISOString());
+
+          if (doneRows) {
+            type CompletionRow = { circle_id: string; task_id: string };
+            for (const r of doneRows as unknown as CompletionRow[]) {
+              doneSet.add(`${r.circle_id}:${r.task_id}`);
+            }
+          }
+        }
+
+        const nextTasks: TodayTaskItem[] = ctList
           .map((r) => {
             const title = titleById[r.task_id];
             if (!title) return null;
             const circleId = String(r.circle_id);
-            const key = `${circleId}:${String(r.task_id)}`;
+            const key = `${circleId}:${r.task_id}`;
             return {
               key,
               circleId,
@@ -223,26 +267,33 @@ export default function UserHome() {
               done: doneSet.has(key),
             };
           })
-          .filter(Boolean) as TodayTaskItem[];
+          .filter((x): x is TodayTaskItem => x !== null);
 
-        const total = nextTasks.length;
-        const done = nextTasks.filter((x) => x.done).length;
-        const pct = total === 0 ? 0 : Math.round((done / total) * 100);
+        // My weekly points across all circles
+        const wStart = startOfWeekUTC();
+        const wEnd = endOfWeekUTC();
 
-        const nextStreak = 0;
-        const nextPoints = 0;
+        const { data: weekRows } = await supabase
+          .from("task_completions")
+          .select("points")
+          .in("circle_id", circleIds)
+          .eq("user_id", uid)
+          .gte("completed_at", wStart.toISOString())
+          .lt("completed_at", wEnd.toISOString());
+
+        let myTotal = 0;
+        if (weekRows) {
+          type WeekRow = { points?: number | null };
+          for (const r of weekRows as unknown as WeekRow[]) {
+            myTotal += Number(r.points) || POINTS_PER_TASK;
+          }
+        }
 
         if (!alive) return;
 
-        setTodayTasks((prev) => {
-          const a = JSON.stringify(prev);
-          const b = JSON.stringify(nextTasks);
-          return a === b ? prev : nextTasks;
-        });
-        setProgressPct((prev) => (prev === pct ? prev : pct));
-        setStreakDays((prev) => (prev === nextStreak ? prev : nextStreak));
-        setWeeklyPoints((prev) => (prev === nextPoints ? prev : nextPoints));
-
+        setTodayTasks(nextTasks);
+        setWeeklyPoints(myTotal);
+        setCircleCount(circles.length);
         setLoading(false);
       } finally {
         inFlightRef.current = false;
@@ -256,243 +307,366 @@ export default function UserHome() {
     };
   }, []);
 
-  const headingName = firstName.trim() ? firstName.trim() : "there";
+  const greetingName = firstName.trim() || "there";
 
-  const radius = 36;
-  const stroke = 10;
-  const circumference = 2 * Math.PI * radius;
-  const progressOffset = circumference - (progressPct / 100) * circumference;
-
-  const renderTask = ({ item }: { item: TodayTaskItem }) => (
-    <View style={styles.taskRow}>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.taskText} numberOfLines={1}>
-          {item.title}
-        </Text>
-        <Text style={styles.taskSub} numberOfLines={1}>
-          {item.circleName}
-        </Text>
-      </View>
-      {item.done ? <Ionicons name="checkmark-circle" size={22} color={PRIMARY} /> : null}
-    </View>
+  const doneCount = useMemo(
+    () => todayTasks.filter((t) => t.done).length,
+    [todayTasks],
   );
+  const totalCount = todayTasks.length;
+  const progressPct = totalCount === 0 ? 0 : doneCount / totalCount;
 
-  // show max 3 tasks on home
-  const taskList = useMemo(() => todayTasks.slice(0, 3), [todayTasks]);
+  useEffect(() => {
+    Animated.timing(ringAnim, {
+      toValue: progressPct,
+      duration: 520,
+      easing: Easing.out(Easing.exp),
+      useNativeDriver: true,
+    }).start();
+  }, [progressPct, ringAnim]);
+
+  const ringOffset = ringAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [RING_CIRCUMFERENCE, 0],
+  });
+
+  const visibleTasks = showAllTasks ? todayTasks : todayTasks.slice(0, 5);
+  const hiddenCount = todayTasks.length - visibleTasks.length;
+
+  const opacity = mountAnim;
+  const translateY = mountAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [18, 0],
+  });
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <View style={styles.root}>
+      <Animated.View
+        style={[styles.root, { opacity, transform: [{ translateY }] }]}
+      >
         <ScrollView
           style={styles.scroll}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          <Text style={styles.heading}>Hello, {headingName}</Text>
+          <View style={styles.header}>
+            <Text style={styles.overline}>Good to see you</Text>
+            <Text style={styles.greeting}>Hello, {greetingName}.</Text>
+          </View>
 
-          <View style={styles.topCardsRow}>
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>Your total Progress today</Text>
-
-              <View style={styles.progressContainer}>
-                <Svg width={100} height={100}>
-                  <Circle
-                    cx="50"
-                    cy="50"
-                    r={radius}
-                    stroke="rgba(0,0,0,0.10)"
-                    strokeWidth={stroke}
-                    fill="none"
-                  />
-                  <Circle
-                    cx="50"
-                    cy="50"
-                    r={radius}
-                    stroke={PRIMARY}
-                    strokeWidth={stroke}
-                    fill="none"
-                    strokeDasharray={`${circumference} ${circumference}`}
-                    strokeDashoffset={progressOffset}
-                    strokeLinecap="round"
-                    rotation={-90}
-                    originX="50"
-                    originY="50"
-                  />
-                </Svg>
-                <Text style={[styles.progressText, { color: PRIMARY }]}>{progressPct}%</Text>
+          <View style={styles.todayCard}>
+            <View style={styles.ringWrap}>
+              <Svg width={RING_SIZE} height={RING_SIZE}>
+                <SvgCircle
+                  cx={RING_SIZE / 2}
+                  cy={RING_SIZE / 2}
+                  r={RING_RADIUS}
+                  stroke={Colors.progressTrack}
+                  strokeWidth={RING_STROKE}
+                  fill="transparent"
+                />
+                <AnimatedCircle
+                  cx={RING_SIZE / 2}
+                  cy={RING_SIZE / 2}
+                  r={RING_RADIUS}
+                  stroke={Colors.brand.greenBright}
+                  strokeWidth={RING_STROKE}
+                  strokeDasharray={RING_CIRCUMFERENCE}
+                  strokeDashoffset={ringOffset}
+                  strokeLinecap="round"
+                  fill="transparent"
+                  transform={`rotate(-90 ${RING_SIZE / 2} ${RING_SIZE / 2})`}
+                />
+              </Svg>
+              <View style={styles.ringLabel} pointerEvents="none">
+                <Text style={styles.ringNumber}>
+                  {doneCount}
+                  <Text style={styles.ringDenom}>/{totalCount}</Text>
+                </Text>
               </View>
             </View>
-
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>AVATAR</Text>
-              <View style={styles.avatarPlaceholder} />
+            <View style={styles.todayBody}>
+              <Text style={styles.todayOverline}>Today</Text>
+              <Text style={styles.todayHeadline}>
+                {totalCount === 0
+                  ? "No tasks today"
+                  : doneCount === totalCount
+                    ? "All done."
+                    : `${totalCount - doneCount} to go.`}
+              </Text>
+              <Text style={styles.todayHelper}>
+                across {circleCount} {circleCount === 1 ? "circle" : "circles"}
+              </Text>
             </View>
           </View>
 
-          <View style={styles.wideCard}>
-            <Text style={styles.wideCardTitle}>Today's tasks</Text>
+          <View style={styles.weekCard}>
+            <View style={styles.weekLeft}>
+              <Text style={styles.weekOverline}>This week</Text>
+              <Text style={styles.weekHelper}>
+                {weeklyPoints === 1 ? "point" : "points"} earned
+              </Text>
+            </View>
+            <Text style={styles.weekValue}>{weeklyPoints}</Text>
+          </View>
+
+          <View style={styles.section}>
+            <View style={styles.sectionHead}>
+              <Text style={styles.sectionTitle}>Today's tasks</Text>
+              {totalCount > 0 ? (
+                <Text style={styles.sectionMeta}>
+                  {doneCount} / {totalCount}
+                </Text>
+              ) : null}
+            </View>
 
             {loading ? (
-              <View style={styles.emptyBox}>
-                <Text style={styles.emptyText}>Loading...</Text>
+              <View style={styles.emptyState}>
+                <Text style={styles.emptyText}>Loading your week…</Text>
               </View>
-            ) : taskList.length === 0 ? (
-              <View style={styles.emptyBox}>
-                <Text style={styles.emptyText}>so empty....</Text>
+            ) : todayTasks.length === 0 ? (
+              <View style={styles.emptyState}>
+                <Text style={styles.emptyTitle}>No tasks yet</Text>
+                <Text style={styles.emptyHelper}>
+                  Join or create a circle to start your week.
+                </Text>
               </View>
             ) : (
-              <FlatList
-                data={taskList}
-                renderItem={renderTask}
-                keyExtractor={(t) => t.key}
-                scrollEnabled={false}
-                contentContainerStyle={{ gap: 10, marginTop: 14 }}
-              />
-            )}
-          </View>
-
-          <View style={styles.bottomCardsRow}>
-            <View style={styles.smallCard}>
-              <Ionicons name="flash" size={24} color="#FFD700" />
-              <Text style={styles.streakText}>{streakDays} streak</Text>
-            </View>
-
-            <View style={styles.smallCard}>
-              <Text style={styles.cardTitle}>Total Points this week</Text>
-              <View style={styles.pointsContainer}>
-                <Ionicons name="star" size={20} color="#FFD700" />
-                <Text style={styles.pointsText}>{weeklyPoints}</Text>
+              <View style={styles.taskList}>
+                {visibleTasks.map((t) => (
+                  <View key={t.key} style={styles.taskRow}>
+                    <View style={styles.taskTextCol}>
+                      <Text
+                        style={[
+                          styles.taskTitle,
+                          t.done && styles.taskTitleDone,
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {t.title}
+                      </Text>
+                      <Text style={styles.taskCircle} numberOfLines={1}>
+                        {t.circleName}
+                      </Text>
+                    </View>
+                    {t.done ? (
+                      <Ionicons
+                        name="checkmark-circle"
+                        size={22}
+                        color={Colors.brand.greenBright}
+                      />
+                    ) : (
+                      <View style={styles.taskPending} />
+                    )}
+                  </View>
+                ))}
+                {todayTasks.length > 5 ? (
+                  <Pressable
+                    onPress={() => setShowAllTasks((v) => !v)}
+                    style={({ pressed }) => [
+                      styles.showMore,
+                      pressed && styles.showMorePressed,
+                    ]}
+                    hitSlop={{ top: 8, bottom: 8, left: 12, right: 12 }}
+                  >
+                    <Text style={styles.showMoreText}>
+                      {showAllTasks ? "Show less" : `Show ${hiddenCount} more`}
+                    </Text>
+                    <Ionicons
+                      name={showAllTasks ? "chevron-up" : "chevron-down"}
+                      size={16}
+                      color={Colors.text.secondary}
+                    />
+                  </Pressable>
+                ) : null}
               </View>
-            </View>
+            )}
           </View>
         </ScrollView>
 
-        <View style={styles.tabBar}>
-          <Pressable style={styles.tabItem}>
-            <View style={styles.tabContent}>
-              <Ionicons name="home" size={24} color={PRIMARY} />
-              <Text style={[styles.tabTextActive, { color: PRIMARY }]}>Home</Text>
-              <View style={[styles.tabIndicator, { backgroundColor: PRIMARY }]} />
-            </View>
-          </Pressable>
-
-          <Pressable onPress={() => router.push("/create-circle")} style={styles.tabItem}>
-            <Ionicons name="people" size={24} color="#999999" />
-            <Text style={styles.tabTextInactive}>Circles</Text>
-          </Pressable>
-
-          <Pressable style={styles.tabItem}>
-            <Ionicons name="settings" size={24} color="#999999" />
-            <Text style={styles.tabTextInactive}>Settings</Text>
-          </Pressable>
-        </View>
-      </View>
+        <TabBar active="home" />
+      </Animated.View>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: BG },
-
-  root: { flex: 1, backgroundColor: BG },
+  safeArea: { flex: 1, backgroundColor: Colors.bg.base },
+  root: { flex: 1 },
   scroll: { flex: 1 },
   scrollContent: {
-    paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 120, // space for tab bar
+    paddingHorizontal: Spacing.screenHorizontal,
+    paddingTop: Spacing.screenTop,
+    paddingBottom: 32,
+    gap: Spacing.sectionGap,
   },
 
-  heading: { fontSize: 32, fontWeight: "900", color: "#000000", marginBottom: 24 },
-
-  topCardsRow: { flexDirection: "row", gap: 12, marginBottom: 20 },
-  card: {
-    flex: 1,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 25,
-    padding: 16,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
-    alignItems: "center",
+  header: {
+    gap: 6,
+    paddingTop: 4,
   },
-  cardTitle: { fontSize: 14, fontWeight: "600", color: "#000000", marginBottom: 16, textAlign: "center" },
+  overline: {
+    ...Typography.overline,
+    textTransform: "uppercase",
+    letterSpacing: 1.2,
+  },
+  greeting: {
+    ...Typography.title,
+    fontSize: 30,
+    letterSpacing: -0.4,
+  },
 
-  progressContainer: { width: 100, height: 100, alignItems: "center", justifyContent: "center" },
-  progressText: { position: "absolute", fontSize: 20, fontWeight: "800" },
-
-  avatarPlaceholder: { width: 100, height: 100, backgroundColor: "#F5F5F5", borderRadius: 50, marginTop: 8 },
-
-  wideCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 25,
+  todayCard: {
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.card,
     padding: 20,
-    marginBottom: 20,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
-    minHeight: 200,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 20,
   },
-  wideCardTitle: { fontSize: 18, fontWeight: "700", color: "#000000", textAlign: "center" },
+  ringWrap: {
+    width: RING_SIZE,
+    height: RING_SIZE,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  ringLabel: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  ringNumber: {
+    ...Typography.display,
+    fontSize: 30,
+    letterSpacing: -0.6,
+    lineHeight: 34,
+  },
+  ringDenom: {
+    ...Typography.label,
+    fontSize: 16,
+    color: Colors.text.secondary,
+  },
+  todayBody: {
+    flex: 1,
+    gap: 6,
+  },
+  todayOverline: {
+    ...Typography.overline,
+    textTransform: "uppercase",
+    letterSpacing: 1.2,
+  },
+  todayHeadline: {
+    ...Typography.title,
+    fontSize: 22,
+    letterSpacing: -0.4,
+  },
+  todayHelper: {
+    ...Typography.label,
+  },
 
-  emptyBox: { flex: 1, alignItems: "center", justifyContent: "center", paddingVertical: 18 },
-  emptyText: { fontSize: 16, color: "#CCCCCC", opacity: 0.7 },
+  weekCard: {
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.card,
+    paddingHorizontal: 20,
+    paddingVertical: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 16,
+  },
+  weekLeft: {
+    gap: 4,
+  },
+  weekOverline: {
+    ...Typography.overline,
+    textTransform: "uppercase",
+    letterSpacing: 1.2,
+    color: Colors.text.primary,
+  },
+  weekHelper: {
+    ...Typography.label,
+  },
+  weekValue: {
+    ...Typography.display,
+    fontSize: 44,
+    letterSpacing: -1.2,
+    lineHeight: 48,
+  },
 
+  section: {
+    gap: 14,
+  },
+  sectionHead: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+  },
+  sectionTitle: {
+    ...Typography.section,
+  },
+  sectionMeta: {
+    ...Typography.caption,
+  },
+
+  taskList: {
+    gap: 4,
+  },
   taskRow: {
-    backgroundColor: "rgba(0,0,0,0.05)",
-    borderWidth: 1,
-    borderColor: BORDER,
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingVertical: 14,
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
   },
-  taskText: { fontSize: 16, fontWeight: "800", color: "#000000" },
-  taskSub: { fontSize: 12, fontWeight: "600", color: "rgba(0,0,0,0.45)", marginTop: 2 },
-
-  bottomCardsRow: { flexDirection: "row", gap: 12, marginBottom: 10 },
-  smallCard: {
+  taskTextCol: {
     flex: 1,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 25,
-    padding: 16,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
-    alignItems: "center",
-    justifyContent: "center",
-    minHeight: 100,
+    gap: 3,
   },
-  streakText: { fontSize: 16, fontWeight: "600", color: "#000000", marginTop: 8 },
-
-  pointsContainer: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 8 },
-  pointsText: { fontSize: 24, fontWeight: "700", color: "#000000" },
-
-  tabBar: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
+  taskTitle: {
+    ...Typography.body,
+  },
+  taskTitleDone: {
+    color: Colors.text.secondary,
+  },
+  taskCircle: {
+    ...Typography.caption,
+  },
+  taskPending: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+  },
+  showMore: {
+    marginTop: 4,
+    alignSelf: "flex-start",
     flexDirection: "row",
-    backgroundColor: BG,
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderTopWidth: 1,
-    borderTopColor: "#E0E0E0",
-    justifyContent: "space-around",
     alignItems: "center",
-    paddingBottom: 20,
+    gap: 4,
+    paddingVertical: 10,
   },
-  tabItem: { alignItems: "center", justifyContent: "center", flex: 1 },
-  tabContent: { alignItems: "center", justifyContent: "center" },
-  tabIndicator: { width: 30, height: 3, marginTop: 4, borderRadius: 2 },
-  tabTextActive: { fontSize: 12, fontWeight: "600", marginTop: 4 },
-  tabTextInactive: { fontSize: 12, color: "#999999", fontWeight: "500", marginTop: 4 },
+  showMorePressed: {
+    opacity: 0.6,
+  },
+  showMoreText: {
+    ...Typography.label,
+    fontWeight: "600",
+  },
+
+  emptyState: {
+    paddingVertical: 28,
+    alignItems: "center",
+    gap: 6,
+  },
+  emptyTitle: {
+    ...Typography.body,
+    fontWeight: "600",
+  },
+  emptyText: {
+    ...Typography.label,
+  },
+  emptyHelper: {
+    ...Typography.label,
+    textAlign: "center",
+  },
 });

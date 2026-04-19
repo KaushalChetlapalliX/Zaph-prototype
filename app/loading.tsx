@@ -1,10 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, StyleSheet, Animated, FlatList, ActivityIndicator } from "react-native";
+import {
+  ActivityIndicator,
+  Animated,
+  Easing,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, router } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "../src/lib/supabase";
+import {
+  Colors,
+  Radius,
+  Spacing,
+  Typography,
+} from "../src/constants/design";
 
 type Level = "easy" | "medium" | "hard";
 
@@ -14,11 +28,23 @@ type Member = {
   done: boolean;
 };
 
+type MemberRow = {
+  user_id: string;
+  first_name?: string | null;
+  tasks_done?: boolean | string | number | null;
+  joined_at?: string | null;
+};
+
+type SelectionRow = {
+  user_id?: string | null;
+};
+
 const POLL_MS = 2000;
 
 export default function LoadingScreen() {
   const params = useLocalSearchParams<{ circleId?: string; level?: string }>();
   const rotateAnim = useRef(new Animated.Value(0)).current;
+  const mountAnim = useRef(new Animated.Value(0)).current;
 
   const [circleId, setCircleId] = useState<string | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
@@ -34,11 +60,21 @@ export default function LoadingScreen() {
   }, [params.level]);
 
   useEffect(() => {
+    Animated.timing(mountAnim, {
+      toValue: 1,
+      duration: 520,
+      easing: Easing.out(Easing.exp),
+      useNativeDriver: true,
+    }).start();
+  }, [mountAnim]);
+
+  useEffect(() => {
     const rotate = () => {
       rotateAnim.setValue(0);
       Animated.timing(rotateAnim, {
         toValue: 1,
-        duration: 2000,
+        duration: 1800,
+        easing: Easing.linear,
         useNativeDriver: true,
       }).start(() => rotate());
     };
@@ -47,7 +83,9 @@ export default function LoadingScreen() {
 
   useEffect(() => {
     const init = async () => {
-      const raw = Array.isArray(params.circleId) ? params.circleId[0] : params.circleId;
+      const raw = Array.isArray(params.circleId)
+        ? params.circleId[0]
+        : params.circleId;
 
       if (raw && raw.length > 0) {
         setCircleId(raw);
@@ -77,7 +115,9 @@ export default function LoadingScreen() {
       rows.map((m) => `${m.id}|${m.name}|${m.done ? "1" : "0"}`).join(",");
 
     const fetchMembers = async (isInitial = false) => {
-      if (isInitial && !initialLoadedRef.current && members.length === 0) setLoadingMembers(true);
+      if (isInitial && !initialLoadedRef.current && members.length === 0) {
+        setLoadingMembers(true);
+      }
 
       const { data: memberRows, error } = await supabase
         .from("circle_members")
@@ -95,26 +135,24 @@ export default function LoadingScreen() {
         return;
       }
 
-      // Fallback done status from selections table
       const doneSet = new Set<string>();
       try {
-        let q = supabase
+        const { data: selections, error: selErr } = await supabase
           .from("circle_task_selections")
           .select("user_id")
-          .eq("circle_id", circleId);
-
-        q = q.eq("level", level);
-
-        const { data: selections, error: selErr } = await q;
+          .eq("circle_id", circleId)
+          .eq("level", level);
 
         if (!selErr && selections) {
-          for (const s of selections as any[]) {
+          for (const s of selections as unknown as SelectionRow[]) {
             if (s?.user_id) doneSet.add(String(s.user_id));
           }
         }
       } catch {}
 
-      const nextMembers: Member[] = (memberRows as any[]).map((m) => {
+      const typedRows = memberRows as unknown as MemberRow[];
+
+      const nextMembers: Member[] = typedRows.map((m) => {
         const uid = String(m.user_id);
         const fn = (m.first_name ?? "").trim();
 
@@ -141,8 +179,8 @@ export default function LoadingScreen() {
         setLoadingMembers(false);
       }
 
-      // Move ONLY when everyone in circle_members is done
-      const allDone = nextMembers.length > 0 && nextMembers.every((m) => m.done);
+      const allDone =
+        nextMembers.length > 0 && nextMembers.every((m) => m.done);
 
       if (allDone && !hasNavigatedRef.current) {
         hasNavigatedRef.current = true;
@@ -168,187 +206,215 @@ export default function LoadingScreen() {
     outputRange: ["0deg", "360deg"],
   });
 
-  const renderMember = ({ item }: { item: Member }) => (
-    <View style={[styles.memberRow, item.done ? styles.memberRowDone : null]}>
-      <Text style={styles.memberName}>{item.name}</Text>
-    </View>
-  );
+  const translate = mountAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [12, 0],
+  });
+
+  const doneCount = members.filter((m) => m.done).length;
+  const totalCount = members.length;
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <View style={styles.container}>
-        <View style={styles.content}>
-          <Text style={styles.headline}>
-            Wait for others to{"\n"}finish... Grab a coffee
-          </Text>
+    <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
+      <Animated.View
+        style={[
+          styles.header,
+          { opacity: mountAnim, transform: [{ translateY: translate }] },
+        ]}
+      >
+        <Text style={styles.overline}>WAITING ROOM</Text>
+        <Text style={styles.title}>Hold tight.</Text>
+        <Text style={styles.helper}>
+          Circle picks tasks together. Grab a coffee while everyone locks in.
+        </Text>
+      </Animated.View>
 
-          <View style={styles.ringContainer}>
-            <View style={styles.ringBackground} />
-            <Animated.View style={[styles.ringForeground, { transform: [{ rotate: rotation }] }]} />
-          </View>
-
-          <View style={styles.memberListContainer}>
-            {!circleId ? (
-              <View style={styles.emptyState}>
-                <Text style={styles.emptyText}>No circle selected</Text>
-              </View>
-            ) : loadingMembers && members.length === 0 ? (
-              <View style={styles.loadingMembersRow}>
-                <ActivityIndicator />
-                <Text style={styles.loadingMembersText}>Loading members</Text>
-              </View>
-            ) : (
-              <>
-                <Text style={styles.helperText}>Waiting for everyone in this circle to finish selecting.</Text>
-
-                <FlatList
-                  data={members}
-                  renderItem={renderMember}
-                  keyExtractor={(item) => item.id}
-                  scrollEnabled={false}
-                  contentContainerStyle={styles.memberListContent}
-                />
-              </>
-            )}
-          </View>
-        </View>
-
-        <View style={styles.tabBar}>
-          <View style={styles.tabItem}>
-            <View style={styles.tabContent}>
-              <Ionicons name="home" size={24} color="#8A2BE2" />
-              <Text style={styles.tabTextActive}>Home</Text>
-              <View style={styles.tabIndicator} />
-            </View>
-          </View>
-
-          <View style={styles.tabItem}>
-            <Ionicons name="people" size={24} color="#999999" />
-            <Text style={styles.tabTextInactive}>Circles</Text>
-          </View>
-
-          <View style={styles.tabItem}>
-            <Ionicons name="settings" size={24} color="#999999" />
-            <Text style={styles.tabTextInactive}>Settings</Text>
+      <View style={styles.ringRow}>
+        <View style={styles.ringContainer}>
+          <View style={styles.ringBackground} />
+          <Animated.View
+            style={[
+              styles.ringForeground,
+              { transform: [{ rotate: rotation }] },
+            ]}
+          />
+          <View style={styles.ringLabel}>
+            <Text style={styles.ringCount}>
+              {totalCount > 0 ? `${doneCount}/${totalCount}` : "—"}
+            </Text>
+            <Text style={styles.ringCaption}>picked</Text>
           </View>
         </View>
       </View>
+
+      <ScrollView
+        style={styles.list}
+        contentContainerStyle={styles.listContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {!circleId ? (
+          <View style={styles.statusBlock}>
+            <Text style={styles.statusTitle}>No circle selected</Text>
+            <Text style={styles.statusText}>
+              Join or create a circle to continue.
+            </Text>
+          </View>
+        ) : loadingMembers && members.length === 0 ? (
+          <View style={styles.statusBlock}>
+            <ActivityIndicator color={Colors.text.primary} size="small" />
+            <Text style={styles.statusText}>Loading members…</Text>
+          </View>
+        ) : members.length === 0 ? (
+          <View style={styles.statusBlock}>
+            <Text style={styles.statusTitle}>No members yet</Text>
+            <Text style={styles.statusText}>
+              Share your circle code to get your friends in.
+            </Text>
+          </View>
+        ) : (
+          members.map((m) => (
+            <View key={m.id} style={styles.row}>
+              <Text style={styles.rowName} numberOfLines={1}>
+                {m.name}
+              </Text>
+              {m.done ? (
+                <View style={styles.readyTag}>
+                  <Ionicons
+                    name="checkmark"
+                    size={14}
+                    color={Colors.brand.greenBright}
+                  />
+                  <Text style={styles.readyText}>Ready</Text>
+                </View>
+              ) : (
+                <Text style={styles.pendingText}>Picking…</Text>
+              )}
+            </View>
+          ))
+        )}
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
+const RING_SIZE = 140;
+const RING_STROKE = 6;
+
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: "#F8EEFF" },
-  container: { flex: 1, backgroundColor: "#F8EEFF", paddingBottom: 80 },
-  content: {
+  safeArea: {
     flex: 1,
-    justifyContent: "flex-start",
-    alignItems: "center",
-    paddingHorizontal: 20,
-    paddingTop: 40,
+    backgroundColor: Colors.bg.base,
   },
-  headline: {
-    fontSize: 36,
-    fontWeight: "800",
-    color: "#000000",
-    textAlign: "center",
-    lineHeight: 42,
-    marginBottom: 40,
+  header: {
+    paddingHorizontal: Spacing.screenHorizontal,
+    paddingTop: Spacing.screenTop,
+    paddingBottom: 16,
+    gap: 6,
+  },
+  overline: {
+    ...Typography.overline,
+    letterSpacing: 1.6,
+  },
+  title: {
+    ...Typography.display,
+    fontSize: 30,
+  },
+  helper: {
+    ...Typography.label,
+    marginTop: 2,
+  },
+  ringRow: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 28,
   },
   ringContainer: {
-    width: 130,
-    height: 130,
+    width: RING_SIZE,
+    height: RING_SIZE,
     alignItems: "center",
     justifyContent: "center",
-    position: "relative",
   },
   ringBackground: {
-    width: 130,
-    height: 130,
-    borderRadius: 65,
-    borderWidth: 8,
-    borderColor: "rgba(138, 43, 226, 0.15)",
     position: "absolute",
+    width: RING_SIZE,
+    height: RING_SIZE,
+    borderRadius: RING_SIZE / 2,
+    borderWidth: RING_STROKE,
+    borderColor: Colors.progressTrack,
   },
   ringForeground: {
-    width: 130,
-    height: 130,
-    borderRadius: 65,
-    borderWidth: 8,
+    position: "absolute",
+    width: RING_SIZE,
+    height: RING_SIZE,
+    borderRadius: RING_SIZE / 2,
+    borderWidth: RING_STROKE,
     borderColor: "transparent",
-    borderTopColor: "#8A2BE2",
-    borderRightColor: "#8A2BE2",
-    borderBottomColor: "transparent",
-    borderLeftColor: "transparent",
-    position: "absolute",
+    borderTopColor: Colors.brand.greenBright,
+    borderRightColor: Colors.brand.greenBright,
   },
-  memberListContainer: { width: "100%", marginTop: 40, maxWidth: 400 },
-  memberListContent: { gap: 12 },
-  memberRow: {
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#000000",
-    borderRadius: 12,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    justifyContent: "center",
-    minHeight: 48,
-  },
-  memberRowDone: { backgroundColor: "#87E47B" },
-  memberName: { fontSize: 16, fontWeight: "600", color: "#000000" },
-  helperText: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "rgba(0,0,0,0.55)",
-    textAlign: "center",
-    marginBottom: 12,
-  },
-  emptyState: {
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#000000",
-    borderRadius: 12,
-    paddingVertical: 16,
-    paddingHorizontal: 16,
-  },
-  emptyText: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "rgba(0,0,0,0.55)",
-    textAlign: "center",
-  },
-  loadingMembersRow: {
-    flexDirection: "row",
+  ringLabel: {
     alignItems: "center",
+    gap: 2,
+  },
+  ringCount: {
+    ...Typography.display,
+    fontSize: 30,
+  },
+  ringCaption: {
+    ...Typography.caption,
+  },
+  list: {
+    flex: 1,
+  },
+  listContent: {
+    paddingHorizontal: Spacing.screenHorizontal,
+    paddingBottom: 32,
     gap: 10,
-    justifyContent: "center",
-    paddingVertical: 10,
   },
-  loadingMembersText: { fontSize: 14, fontWeight: "600", color: "rgba(0,0,0,0.55)" },
-  tabBar: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    flexDirection: "row",
-    backgroundColor: "#F8EEFF",
+  row: {
+    minHeight: 56,
+    paddingHorizontal: Spacing.cardPadding,
     paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderTopWidth: 1,
-    borderTopColor: "#E0E0E0",
-    justifyContent: "space-around",
+    borderRadius: Radius.cardSm,
+    backgroundColor: Colors.bg.card,
+    flexDirection: "row",
     alignItems: "center",
-    paddingBottom: 20,
+    justifyContent: "space-between",
+    gap: 12,
   },
-  tabItem: { alignItems: "center", justifyContent: "center", flex: 1 },
-  tabContent: { alignItems: "center", justifyContent: "center" },
-  tabIndicator: {
-    width: 30,
-    height: 3,
-    backgroundColor: "#8A2BE2",
-    marginTop: 4,
-    borderRadius: 2,
+  rowName: {
+    ...Typography.body,
+    flex: 1,
   },
-  tabTextActive: { fontSize: 12, color: "#8A2BE2", fontWeight: "600", marginTop: 4 },
-  tabTextInactive: { fontSize: 12, color: "#999999", fontWeight: "500", marginTop: 4 },
+  readyTag: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.bg.cardActive,
+  },
+  readyText: {
+    ...Typography.caption,
+    color: Colors.brand.greenBright,
+    fontWeight: "600",
+  },
+  pendingText: {
+    ...Typography.caption,
+  },
+  statusBlock: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 32,
+    gap: 8,
+  },
+  statusTitle: {
+    ...Typography.body,
+    fontWeight: "600",
+  },
+  statusText: {
+    ...Typography.label,
+    textAlign: "center",
+  },
 });
