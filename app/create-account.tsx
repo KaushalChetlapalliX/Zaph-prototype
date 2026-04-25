@@ -5,12 +5,16 @@ import {
   TextInput,
   Pressable,
   StyleSheet,
-  SafeAreaView,
   Alert,
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { supabase } from "../src/lib/supabase";
+import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
 
 import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
@@ -35,11 +39,8 @@ export default function CreateAccount() {
   const [loadingGoogle, setLoadingGoogle] = useState(false);
 
   const upsertProfile = async (payload: ProfileUpsert) => {
-    // This assumes you have a `public.profiles` table with at least:
-    // id (uuid PK), username (text), full_name (text), first_name (text), last_name (text)
     const { error } = await supabase.from("profiles").upsert(payload, { onConflict: "id" });
     if (error) {
-      // If this fails due to RLS, fix policies on `profiles` (see note below).
       console.log("profiles upsert error:", error.message);
     }
   };
@@ -92,18 +93,16 @@ export default function CreateAccount() {
       return;
     }
 
-    // Store names in profiles table too (so LoadingScreen can read it)
-   const safe = fn.toLowerCase().replace(/[^a-z0-9]/g, "") || "user";
-const username = `${safe}_${userId.slice(0, 6)}`;
+    const safe = fn.toLowerCase().replace(/[^a-z0-9]/g, "") || "user";
+    const username = `${safe}_${userId.slice(0, 6)}`;
 
-await upsertProfile({
-  id: userId,
-  username,
-  full_name: full,
-  first_name: fn,
-  last_name: ln,
-});
-
+    await upsertProfile({
+      id: userId,
+      username,
+      full_name: full,
+      first_name: fn,
+      last_name: ln,
+    });
 
     router.replace("/create-circle");
   };
@@ -167,9 +166,10 @@ await upsertProfile({
       return;
     }
 
-    // Ensure first_name exists in metadata for Google users
-    const meta: any = user.user_metadata ?? {};
-    const fullFromGoogle: string =
+    // user_metadata from Supabase OAuth is unstructured Record<string, any> —
+    // asserting to read optional Google fields off it.
+    const meta = (user.user_metadata ?? {}) as Record<string, string | undefined>;
+    const fullFromGoogle =
       meta.full_name || meta.name || `${meta.given_name ?? ""} ${meta.family_name ?? ""}`.trim();
 
     let fn = (meta.first_name || meta.given_name || "").trim();
@@ -182,7 +182,6 @@ await upsertProfile({
 
     const full = `${fn} ${ln}`.trim() || fullFromGoogle || "User";
 
-    // Write back to auth metadata (so RPC/view can read raw_user_meta_data)
     const { error: updErr } = await supabase.auth.updateUser({
       data: {
         first_name: fn,
@@ -195,7 +194,6 @@ await upsertProfile({
       console.log("updateUser metadata error:", updErr.message);
     }
 
-    // Also store in profiles table
     await upsertProfile({
       id: user.id,
       username: fn || "User",
@@ -208,207 +206,179 @@ await upsertProfile({
     router.replace("/create-circle");
   };
 
+  const busy = loadingEmail || loadingGoogle;
+
   return (
     <SafeAreaView style={styles.safeArea}>
-      <View style={styles.container}>
-        <View style={styles.card}>
-          <Text style={styles.title}>Create Account</Text>
+      <KeyboardAvoidingView
+        style={styles.container}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          keyboardDismissMode="on-drag"
+          showsVerticalScrollIndicator={false}
+        >
+          <Text style={styles.title}>Create account</Text>
 
-          <View style={styles.inputContainer}>
+          <View style={styles.form}>
             <TextInput
               style={styles.input}
-              placeholder="First Name"
-              placeholderTextColor="#666666"
+              placeholder="First name"
+              placeholderTextColor={Colors.text.secondary}
               value={firstName}
               onChangeText={setFirstName}
               autoCapitalize="words"
             />
-          </View>
-
-          <View style={styles.inputContainer}>
             <TextInput
               style={styles.input}
-              placeholder="Last Name"
-              placeholderTextColor="#666666"
+              placeholder="Last name"
+              placeholderTextColor={Colors.text.secondary}
               value={lastName}
               onChangeText={setLastName}
               autoCapitalize="words"
             />
-          </View>
-
-          <View style={styles.inputContainer}>
             <TextInput
               style={styles.input}
-              placeholder="Email Address"
-              placeholderTextColor="#666666"
+              placeholder="Email"
+              placeholderTextColor={Colors.text.secondary}
               value={email}
               onChangeText={setEmail}
               keyboardType="email-address"
               autoCapitalize="none"
             />
-          </View>
-
-          <View style={styles.inputContainer}>
             <TextInput
               style={styles.input}
               placeholder="Password"
-              placeholderTextColor="#666666"
+              placeholderTextColor={Colors.text.secondary}
               value={password}
               onChangeText={setPassword}
               secureTextEntry
               autoCapitalize="none"
             />
+
+            <Pressable
+              onPress={handleSignUp}
+              style={({ pressed }) => [
+                styles.primaryButton,
+                (pressed || busy) && styles.pressed,
+              ]}
+              disabled={busy}
+            >
+              {loadingEmail ? (
+                <View style={styles.loadingRow}>
+                  <ActivityIndicator color={Colors.brand.greenText} size="small" />
+                  <Text style={styles.primaryButtonText}>Creating</Text>
+                </View>
+              ) : (
+                <Text style={styles.primaryButtonText}>Sign up</Text>
+              )}
+            </Pressable>
+
+            <Pressable
+              onPress={handleGoogleSignIn}
+              style={({ pressed }) => [
+                styles.secondaryButton,
+                (pressed || busy) && styles.pressed,
+              ]}
+              disabled={busy}
+            >
+              {loadingGoogle ? (
+                <View style={styles.loadingRow}>
+                  <ActivityIndicator color={Colors.text.primary} size="small" />
+                  <Text style={styles.secondaryButtonText}>Signing in</Text>
+                </View>
+              ) : (
+                <Text style={styles.secondaryButtonText}>Continue with Google</Text>
+              )}
+            </Pressable>
+
+            <Pressable
+              onPress={() => Alert.alert("Apple login", "Apple login is not set up right now.")}
+              style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+              disabled={busy}
+            >
+              <Text style={styles.secondaryButtonText}>Continue with Apple</Text>
+            </Pressable>
           </View>
+        </ScrollView>
 
-          <Pressable
-            onPress={handleSignUp}
-            style={[styles.primaryButton, loadingEmail ? styles.disabled : null]}
-            disabled={loadingEmail || loadingGoogle}
-          >
-            {loadingEmail ? (
-              <View style={styles.loadingRow}>
-                <ActivityIndicator color="#FFFFFF" />
-                <Text style={styles.primaryButtonText}>Creating</Text>
-              </View>
-            ) : (
-              <Text style={styles.primaryButtonText}>Sign up</Text>
-            )}
-          </Pressable>
-
-          <Pressable
-            onPress={handleGoogleSignIn}
-            style={[styles.socialButton, loadingGoogle ? styles.disabled : null]}
-            disabled={loadingEmail || loadingGoogle}
-          >
-            {loadingGoogle ? (
-              <View style={styles.loadingRow}>
-                <ActivityIndicator color="#000000" />
-                <Text style={styles.socialButtonText}>Signing in</Text>
-              </View>
-            ) : (
-              <>
-                <Text style={styles.socialIcon}>G</Text>
-                <Text style={styles.socialButtonText}>Sign up with Google</Text>
-              </>
-            )}
-          </Pressable>
-
-          <Pressable
-            onPress={() => Alert.alert("Apple login", "Apple login is not set up right now.")}
-            style={styles.socialButton}
-            disabled={loadingEmail || loadingGoogle}
-          >
-            <Text style={styles.socialIcon}></Text>
-            <Text style={styles.socialButtonText}>Sign up with Apple</Text>
+        <View style={styles.footer}>
+          <Pressable onPress={() => router.push("/signup")} hitSlop={12}>
+            <Text style={styles.footerLink}>I already have an account</Text>
           </Pressable>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
+const BUTTON_HEIGHT = 54;
+const INPUT_HEIGHT = 54;
+
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: "#F8EEFF",
-  },
-  container: {
-    flex: 1,
-    backgroundColor: "#F8EEFF",
-    paddingHorizontal: 20,
+  safeArea: { flex: 1, backgroundColor: Colors.bg.base },
+  container: { flex: 1 },
+  scrollContent: {
+    paddingHorizontal: Spacing.screenHorizontal,
     paddingTop: 40,
     paddingBottom: 40,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  card: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 30,
-    paddingHorizontal: 24,
-    paddingTop: 32,
-    paddingBottom: 32,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
-    width: "100%",
-    maxWidth: 400,
+    gap: Spacing.sectionGap,
   },
   title: {
+    ...Typography.title,
     fontSize: 28,
-    fontWeight: "700",
-    color: "#000000",
-    marginBottom: 32,
-    textAlign: "center",
   },
-  inputContainer: {
-    marginBottom: 20,
+  form: {
+    gap: Spacing.rowGap,
   },
   input: {
-    backgroundColor: "#FFFFFF",
+    height: INPUT_HEIGHT,
+    backgroundColor: Colors.bg.input,
     borderWidth: 1,
-    borderColor: "#000000",
-    borderRadius: 25,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    fontSize: 16,
-    color: "#000000",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 2,
+    borderColor: Colors.border,
+    borderRadius: Radius.pill,
+    paddingHorizontal: 20,
+    ...Typography.body,
   },
   primaryButton: {
-    backgroundColor: "#8A2BE2",
-    borderRadius: 25,
-    paddingVertical: 16,
+    height: BUTTON_HEIGHT,
+    backgroundColor: Colors.brand.green,
+    borderRadius: Radius.pill,
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 8,
+    marginTop: 4,
   },
   primaryButtonText: {
-    color: "#FFFFFF",
-    fontSize: 16,
+    ...Typography.body,
+    color: Colors.brand.greenText,
     fontWeight: "600",
   },
-  socialButton: {
-    width: "100%",
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#000000",
-    borderRadius: 999,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    marginTop: 12,
-    flexDirection: "row",
+  secondaryButton: {
+    height: BUTTON_HEIGHT,
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.pill,
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#000",
-    shadowOpacity: 0.18,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 3,
   },
-  socialIcon: {
-    position: "absolute",
-    left: 18,
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#000000",
+  secondaryButtonText: {
+    ...Typography.body,
+    fontWeight: "500",
   },
-  socialButtonText: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#000000",
-  },
-  disabled: {
+  pressed: {
     opacity: 0.75,
   },
   loadingRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: Spacing.inlineGap,
+  },
+  footer: {
+    paddingBottom: 24,
+    alignItems: "center",
+  },
+  footerLink: {
+    ...Typography.body,
+    textDecorationLine: "underline",
   },
 });

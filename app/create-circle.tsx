@@ -1,17 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  View,
-  Text,
-  Pressable,
-  SafeAreaView,
-  StyleSheet,
-  FlatList,
   ActivityIndicator,
+  Animated,
+  Easing,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "../src/lib/supabase";
+import {
+  Colors,
+  Radius,
+  Spacing,
+  Typography,
+} from "../src/constants/design";
+import { TabBar } from "../src/components/TabBar";
 
 type Difficulty = "easy" | "medium" | "hard";
 
@@ -30,6 +39,18 @@ type MemberJoinRow = {
 
 const POLL_MS = 2000;
 
+const DIFFICULTY_COPY: Record<Difficulty, string> = {
+  easy: "Easy",
+  medium: "Medium",
+  hard: "Hard",
+};
+
+const DIFFICULTY_COLOR: Record<Difficulty, string> = {
+  easy: Colors.brand.greenBright,
+  medium: Colors.accent.gold,
+  hard: Colors.accent.pink,
+};
+
 export default function CreateCircle() {
   const [loading, setLoading] = useState(true);
   const [circles, setCircles] = useState<CircleRow[]>([]);
@@ -37,16 +58,34 @@ export default function CreateCircle() {
   const initialLoadedRef = useRef(false);
   const circlesSigRef = useRef<string>("");
 
+  const mountAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(mountAnim, {
+      toValue: 1,
+      duration: 520,
+      easing: Easing.out(Easing.exp),
+      useNativeDriver: true,
+    }).start();
+  }, [mountAnim]);
+
   const makeCirclesSig = (rows: CircleRow[]) =>
     rows
-      .map((c) => `${c.id}|${(c.name ?? "").trim()}|${String(c.code ?? "")}|${c.difficulty ?? ""}|${c.stage ?? ""}`)
+      .map(
+        (c) =>
+          `${c.id}|${(c.name ?? "").trim()}|${String(c.code ?? "")}|${
+            c.difficulty ?? ""
+          }|${c.stage ?? ""}`
+      )
       .join(",");
 
   useEffect(() => {
     let alive = true;
 
     const fetchCircles = async (isInitial = false) => {
-      if (isInitial && !initialLoadedRef.current && circles.length === 0) setLoading(true);
+      if (isInitial && !initialLoadedRef.current && circles.length === 0) {
+        setLoading(true);
+      }
 
       const { data: userData } = await supabase.auth.getUser();
       const uid = userData.user?.id;
@@ -77,16 +116,16 @@ export default function CreateCircle() {
         return;
       }
 
-      const rows = data as any as MemberJoinRow[];
+      const rows = data as unknown as MemberJoinRow[];
 
       const next: CircleRow[] = rows
         .map((r) => {
-          const c = r.circles as any;
+          const c = r.circles;
           if (!c) return null;
           if (Array.isArray(c)) return c[0] ?? null;
-          return c as CircleRow;
+          return c;
         })
-        .filter(Boolean) as CircleRow[];
+        .filter((c): c is CircleRow => c !== null);
 
       const seen = new Set<string>();
       const unique: CircleRow[] = [];
@@ -149,189 +188,270 @@ export default function CreateCircle() {
 
     router.push({
       pathname: "/circle-members",
-      params: { circleId, circleCode, level, circleName: String(c.name ?? "") },
+      params: {
+        circleId,
+        circleCode,
+        level,
+        circleName: String(c.name ?? ""),
+      },
     });
-  };
-
-  const renderCircle = ({ item }: { item: CircleRow }) => {
-    const name = (item.name ?? "").trim();
-    const code = String(item.code ?? "");
-    const title = name.length > 0 ? name : code.length > 0 ? `Circle ${code}` : "Circle";
-
-    return (
-      <Pressable onPress={() => openCircle(item)} style={styles.circleRow}>
-        <Text style={styles.circleName}>{title}</Text>
-        <Ionicons name="arrow-forward" size={18} color="#000000" />
-      </Pressable>
-    );
   };
 
   const list = useMemo(() => circles, [circles]);
 
+  const translate = mountAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [12, 0],
+  });
+
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <View style={styles.container}>
-        <View style={styles.header}>
-          <Text style={styles.titleLine1}>Your Active</Text>
-          <Text style={styles.titleLine2}>Circles</Text>
-          <Text style={styles.subtitle}>Track productivity with your friends</Text>
-        </View>
+    <SafeAreaView style={styles.safeArea} edges={["top"]}>
+      <Animated.View
+        style={[
+          styles.header,
+          { opacity: mountAnim, transform: [{ translateY: translate }] },
+        ]}
+      >
+        <Text style={styles.overline}>YOUR CIRCLES</Text>
+        <Text style={styles.title}>Pick a room.</Text>
+        <Text style={styles.helper}>
+          Jump into an active circle or start a new one.
+        </Text>
+      </Animated.View>
 
-        <View style={styles.card}>
-          <View style={styles.buttonRow}>
-            <Pressable onPress={() => router.push("/join-circle-code")} style={styles.joinButton}>
-              <Text style={styles.joinButtonText}>Join</Text>
-            </Pressable>
+      <View style={styles.ctaRow}>
+        <Pressable
+          onPress={() =>
+            router.push({ pathname: "/circle-code", params: { mode: "join" } })
+          }
+          style={({ pressed }) => [
+            styles.secondary,
+            pressed && styles.secondaryPressed,
+          ]}
+        >
+          <Ionicons
+            name="log-in-outline"
+            size={18}
+            color={Colors.text.primary}
+          />
+          <Text style={styles.secondaryText}>Join</Text>
+        </Pressable>
 
-            <Pressable onPress={() => router.push("/create-circle-code")} style={styles.createButton}>
-              <Ionicons name="add" size={20} color="#FFFFFF" />
-              <Text style={styles.createButtonText}>Create</Text>
-            </Pressable>
-          </View>
-
-          {loading && list.length === 0 ? (
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator />
-              <Text style={styles.loadingText}>Loading circles</Text>
-            </View>
-          ) : list.length === 0 ? (
-            <View style={styles.emptyContainer}>
-              <Text style={styles.emptyText}>so empty....</Text>
-            </View>
-          ) : (
-            <FlatList
-              data={list}
-              renderItem={renderCircle}
-              keyExtractor={(c) => c.id}
-              contentContainerStyle={styles.listContent}
-              showsVerticalScrollIndicator={false}
-            />
-          )}
-        </View>
-
-        <View style={styles.tabBar}>
-          <Pressable onPress={() => router.push("/user-home")} style={styles.tabItem}>
-            <View style={styles.tabContent}>
-              <Ionicons name="home" size={24} color="#8A2BE2" />
-              <Text style={styles.tabTextActive}>Home</Text>
-              <View style={styles.tabIndicator} />
-            </View>
-          </Pressable>
-
-          <Pressable style={styles.tabItem}>
-            <Ionicons name="people" size={24} color="#999999" />
-            <Text style={styles.tabTextInactive}>Circles</Text>
-          </Pressable>
-
-          <Pressable style={styles.tabItem}>
-            <Ionicons name="settings" size={24} color="#999999" />
-            <Text style={styles.tabTextInactive}>Settings</Text>
-          </Pressable>
-        </View>
+        <Pressable
+          onPress={() =>
+            router.push({ pathname: "/circle-code", params: { mode: "create" } })
+          }
+          style={({ pressed }) => [
+            styles.primary,
+            pressed && styles.primaryPressed,
+          ]}
+        >
+          <Ionicons name="add" size={20} color={Colors.brand.greenText} />
+          <Text style={styles.primaryText}>New circle</Text>
+        </Pressable>
       </View>
+
+      <ScrollView
+        style={styles.list}
+        contentContainerStyle={styles.listContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {loading && list.length === 0 ? (
+          <View style={styles.statusBlock}>
+            <ActivityIndicator color={Colors.text.primary} size="small" />
+            <Text style={styles.statusText}>Loading circles…</Text>
+          </View>
+        ) : list.length === 0 ? (
+          <View style={styles.statusBlock}>
+            <Text style={styles.statusTitle}>No circles yet</Text>
+            <Text style={styles.statusText}>
+              Create one or join with a 4-digit code.
+            </Text>
+          </View>
+        ) : (
+          list.map((c) => {
+            const name = (c.name ?? "").trim();
+            const code = String(c.code ?? "");
+            const title =
+              name.length > 0
+                ? name
+                : code.length > 0
+                  ? `Circle ${code}`
+                  : "Circle";
+            const d: Difficulty = (c.difficulty ?? "easy") as Difficulty;
+
+            return (
+              <Pressable
+                key={c.id}
+                onPress={() => openCircle(c)}
+                style={({ pressed }) => [
+                  styles.row,
+                  pressed && styles.rowPressed,
+                ]}
+              >
+                <View style={styles.rowBody}>
+                  <Text style={styles.rowTitle} numberOfLines={1}>
+                    {title}
+                  </Text>
+                  <View style={styles.rowMeta}>
+                    <View
+                      style={[
+                        styles.difficultyDot,
+                        { backgroundColor: DIFFICULTY_COLOR[d] },
+                      ]}
+                    />
+                    <Text style={styles.rowMetaText}>
+                      {DIFFICULTY_COPY[d]}
+                    </Text>
+                    {code.length > 0 ? (
+                      <>
+                        <Text style={styles.dotSep}>·</Text>
+                        <Text style={styles.rowMetaText}>Code {code}</Text>
+                      </>
+                    ) : null}
+                  </View>
+                </View>
+                <Ionicons
+                  name="chevron-forward"
+                  size={18}
+                  color={Colors.text.secondary}
+                />
+              </Pressable>
+            );
+          })
+        )}
+      </ScrollView>
+
+      <TabBar active="circles" />
     </SafeAreaView>
   );
 }
 
+const PRIMARY_HEIGHT = 54;
+
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: "#F8EEFF" },
-  container: { flex: 1, backgroundColor: "#F8EEFF", paddingHorizontal: 20, paddingTop: 40, paddingBottom: 80 },
-  header: { alignItems: "center", marginBottom: 32 },
-  titleLine1: { fontSize: 42, fontWeight: "900", color: "#000000", lineHeight: 48 },
-  titleLine2: { fontSize: 42, fontWeight: "900", color: "#000000", lineHeight: 48, marginTop: -8 },
-  subtitle: { fontSize: 16, color: "#666666", marginTop: 12, textAlign: "center" },
-
-  card: {
+  safeArea: {
     flex: 1,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 30,
-    paddingHorizontal: 20,
-    paddingTop: 24,
-    paddingBottom: 24,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
-    marginBottom: 20,
-    minHeight: 400,
+    backgroundColor: Colors.bg.base,
   },
-
-  buttonRow: { flexDirection: "row", gap: 12, marginBottom: 24 },
-
-  joinButton: {
-    flex: 1,
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#E0E0E0",
-    borderRadius: 8,
-    paddingVertical: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 2,
-  },
-  joinButtonText: { color: "#000000", fontSize: 16, fontWeight: "600" },
-
-  createButton: {
-    flex: 1,
-    backgroundColor: "#8A2BE2",
-    borderRadius: 8,
-    paddingVertical: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
+  header: {
+    paddingHorizontal: Spacing.screenHorizontal,
+    paddingTop: Spacing.screenTop,
+    paddingBottom: 16,
     gap: 6,
   },
-  createButtonText: { color: "#FFFFFF", fontSize: 16, fontWeight: "600" },
-
-  loadingContainer: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10 },
-  loadingText: { fontSize: 14, fontWeight: "600", color: "rgba(0,0,0,0.55)" },
-
-  emptyContainer: { flex: 1, alignItems: "center", justifyContent: "center" },
-  emptyText: { fontSize: 16, color: "#CCCCCC", opacity: 0.5 },
-
-  listContent: { gap: 14, paddingTop: 2, paddingBottom: 8 },
-
-  circleRow: {
-    height: 56,
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#000000",
-    borderRadius: 6,
-    paddingHorizontal: 18,
+  overline: {
+    ...Typography.overline,
+    letterSpacing: 1.6,
+  },
+  title: {
+    ...Typography.display,
+    fontSize: 30,
+  },
+  helper: {
+    ...Typography.label,
+    marginTop: 2,
+  },
+  ctaRow: {
+    flexDirection: "row",
+    gap: Spacing.gridGap,
+    paddingHorizontal: Spacing.screenHorizontal,
+    paddingTop: 4,
+    paddingBottom: 18,
+  },
+  secondary: {
+    flex: 1,
+    height: PRIMARY_HEIGHT,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.bg.card,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  secondaryPressed: {
+    backgroundColor: Colors.bg.cardActive,
+  },
+  secondaryText: {
+    ...Typography.body,
+    fontWeight: "600",
+  },
+  primary: {
+    flex: 1,
+    height: PRIMARY_HEIGHT,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.brand.green,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  primaryPressed: {
+    opacity: 0.8,
+  },
+  primaryText: {
+    ...Typography.body,
+    color: Colors.brand.greenText,
+    fontWeight: "600",
+  },
+  list: {
+    flex: 1,
+  },
+  listContent: {
+    paddingHorizontal: Spacing.screenHorizontal,
+    paddingBottom: 32,
+    gap: 10,
+  },
+  row: {
+    minHeight: 68,
+    paddingHorizontal: Spacing.cardPadding,
+    paddingVertical: 14,
+    borderRadius: Radius.cardSm,
+    backgroundColor: Colors.bg.card,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.12,
-    shadowRadius: 6,
-    elevation: 3,
+    gap: 12,
   },
-  circleName: { fontSize: 16, fontWeight: "700", color: "#000000" },
-
-  tabBar: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
+  rowPressed: {
+    backgroundColor: Colors.bg.cardActive,
+  },
+  rowBody: {
+    flex: 1,
+    gap: 4,
+  },
+  rowTitle: {
+    ...Typography.body,
+    fontWeight: "600",
+  },
+  rowMeta: {
     flexDirection: "row",
-    backgroundColor: "#F8EEFF",
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderTopWidth: 1,
-    borderTopColor: "#E0E0E0",
-    justifyContent: "space-around",
     alignItems: "center",
-    paddingBottom: 20,
+    gap: 8,
   },
-  tabItem: { alignItems: "center", justifyContent: "center", flex: 1 },
-  tabContent: { alignItems: "center", justifyContent: "center" },
-  tabIndicator: { width: 30, height: 3, backgroundColor: "#8A2BE2", marginTop: 4, borderRadius: 2 },
-  tabTextActive: { fontSize: 12, color: "#8A2BE2", fontWeight: "600", marginTop: 4 },
-  tabTextInactive: { fontSize: 12, color: "#999999", fontWeight: "500", marginTop: 4 },
+  difficultyDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  rowMetaText: {
+    ...Typography.label,
+  },
+  dotSep: {
+    ...Typography.label,
+  },
+  statusBlock: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 56,
+    gap: 8,
+  },
+  statusTitle: {
+    ...Typography.body,
+    fontWeight: "600",
+  },
+  statusText: {
+    ...Typography.label,
+    textAlign: "center",
+  },
 });

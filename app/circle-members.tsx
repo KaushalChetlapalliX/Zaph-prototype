@@ -1,10 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, FlatList, Pressable, StyleSheet, ActivityIndicator, Alert } from "react-native";
+import {
+  ActivityIndicator,
+  Alert,
+  Animated,
+  Easing,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "../src/lib/supabase";
+import {
+  Colors,
+  Radius,
+  Spacing,
+  Typography,
+} from "../src/constants/design";
 
 type MemberRow = {
   user_id: string;
@@ -15,17 +31,23 @@ type MemberRow = {
 
 type Difficulty = "easy" | "medium" | "hard";
 
-const BG = "#F8EEFF";
-const TEXT_PRIMARY = "#000000";
-const BORDER = "#000000";
-const CARD_BG = "rgba(0,0,0,0.05)";
+type CirclePayload = {
+  code?: string | number | null;
+  difficulty?: Difficulty | null;
+  stage?: string | null;
+};
 
 const MEMBERS_POLL_MS = 2000;
 const CIRCLE_POLL_MS = 1500;
 
+const initialOf = (name: string) =>
+  (name.trim().charAt(0) || "?").toUpperCase();
+
 export default function CircleMembersScreen() {
   const params = useLocalSearchParams<{ circleId?: string }>();
-  const circleIdParam = Array.isArray(params.circleId) ? params.circleId[0] : params.circleId;
+  const circleIdParam = Array.isArray(params.circleId)
+    ? params.circleId[0]
+    : params.circleId;
 
   const [circleId, setCircleId] = useState<string | null>(null);
 
@@ -40,10 +62,20 @@ export default function CircleMembersScreen() {
   const [starting, setStarting] = useState(false);
 
   const navigatedRef = useRef(false);
-
   const membersSigRef = useRef<string>("");
   const circleSigRef = useRef<string>("");
   const initialMembersLoadedRef = useRef(false);
+
+  const mountAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(mountAnim, {
+      toValue: 1,
+      duration: 520,
+      easing: Easing.out(Easing.exp),
+      useNativeDriver: true,
+    }).start();
+  }, [mountAnim]);
 
   useEffect(() => {
     const init = async () => {
@@ -62,7 +94,11 @@ export default function CircleMembersScreen() {
     init();
   }, [circleIdParam]);
 
-  const maybeNavigateToSelect = (nextStage: string, nextDifficulty: Difficulty, nextCode: string) => {
+  const maybeNavigateToSelect = (
+    nextStage: string,
+    nextDifficulty: Difficulty,
+    nextCode: string
+  ) => {
     if (navigatedRef.current) return;
     if (nextStage !== "selecting") return;
 
@@ -83,7 +119,11 @@ export default function CircleMembersScreen() {
 
     let alive = true;
 
-    const applyCircleIfChanged = (nextCode: string, nextDifficulty: Difficulty, nextStage: string) => {
+    const applyCircleIfChanged = (
+      nextCode: string,
+      nextDifficulty: Difficulty,
+      nextStage: string
+    ) => {
       const sig = `${nextCode}|${nextDifficulty}|${nextStage}`;
       if (sig === circleSigRef.current) return;
 
@@ -103,9 +143,10 @@ export default function CircleMembersScreen() {
       if (!alive) return;
       if (error || !data) return;
 
-      const nextCode = String((data as any).code ?? "");
-      const nextDifficulty = ((data as any).difficulty ?? "easy") as Difficulty;
-      const nextStage = String((data as any).stage ?? "lobby");
+      const typed = data as unknown as CirclePayload;
+      const nextCode = String(typed.code ?? "");
+      const nextDifficulty: Difficulty = (typed.difficulty ?? "easy") as Difficulty;
+      const nextStage = String(typed.stage ?? "lobby");
 
       applyCircleIfChanged(nextCode, nextDifficulty, nextStage);
       maybeNavigateToSelect(nextStage, nextDifficulty, nextCode);
@@ -117,14 +158,28 @@ export default function CircleMembersScreen() {
       .channel(`circle-stage-${circleId}`)
       .on(
         "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "circles", filter: `id=eq.${circleId}` },
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "circles",
+          filter: `id=eq.${circleId}`,
+        },
         (payload) => {
-          const nextStage = String((payload.new as any)?.stage ?? "lobby");
-          const nextDifficulty = ((payload.new as any)?.difficulty ?? "easy") as Difficulty;
-          const nextCode = String((payload.new as any)?.code ?? "");
+          const newRow = (payload.new ?? {}) as CirclePayload;
+          const nextStage = String(newRow.stage ?? "lobby");
+          const nextDifficulty: Difficulty = (newRow.difficulty ?? "easy") as Difficulty;
+          const nextCode = String(newRow.code ?? "");
 
-          applyCircleIfChanged(nextCode || circleCode, nextDifficulty, nextStage);
-          maybeNavigateToSelect(nextStage, nextDifficulty, nextCode || circleCode);
+          applyCircleIfChanged(
+            nextCode || circleCode,
+            nextDifficulty,
+            nextStage
+          );
+          maybeNavigateToSelect(
+            nextStage,
+            nextDifficulty,
+            nextCode || circleCode
+          );
         }
       )
       .subscribe();
@@ -157,7 +212,9 @@ export default function CircleMembersScreen() {
         .maybeSingle();
 
       if (!alive) return;
-      setIsAdmin((row as any)?.role === "admin");
+
+      const typed = (row ?? null) as { role?: string | null } | null;
+      setIsAdmin(typed?.role === "admin");
     };
 
     resolveAdmin();
@@ -174,11 +231,19 @@ export default function CircleMembersScreen() {
 
     const makeMembersSig = (rows: MemberRow[]) =>
       rows
-        .map((m) => `${m.user_id}|${(m.first_name ?? "").trim()}|${m.role ?? ""}`)
+        .map(
+          (m) => `${m.user_id}|${(m.first_name ?? "").trim()}|${m.role ?? ""}`
+        )
         .join(",");
 
     const fetchMembers = async (isInitial = false) => {
-      if (isInitial && !initialMembersLoadedRef.current && members.length === 0) setLoading(true);
+      if (
+        isInitial &&
+        !initialMembersLoadedRef.current &&
+        members.length === 0
+      ) {
+        setLoading(true);
+      }
 
       const { data, error } = await supabase
         .from("circle_members")
@@ -196,7 +261,7 @@ export default function CircleMembersScreen() {
         return;
       }
 
-      const next = data as any as MemberRow[];
+      const next = data as unknown as MemberRow[];
       const sig = makeMembersSig(next);
 
       if (sig !== membersSigRef.current) {
@@ -251,133 +316,248 @@ export default function CircleMembersScreen() {
     });
   };
 
-  const renderMember = ({ item }: { item: MemberRow }) => {
-    const name = (item.first_name ?? "").trim() || `User ${item.user_id.slice(0, 6)}`;
-    const showAdmin = (item.role ?? "") === "admin";
-
-    return (
-      <View style={styles.memberRow}>
-        <Text style={styles.memberName}>{name}</Text>
-        {showAdmin ? <Text style={styles.adminTag}>Admin</Text> : null}
-      </View>
-    );
-  };
-
   const list = useMemo(() => members, [members]);
 
+  const translate = mountAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [12, 0],
+  });
+
+  const disabled = starting || list.length === 0;
+
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <View style={styles.container}>
-        <View style={styles.codePill}>
-          <Text style={styles.codeText}>{circleCode || "----"}</Text>
+    <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
+      <Animated.View
+        style={[
+          styles.header,
+          { opacity: mountAnim, transform: [{ translateY: translate }] },
+        ]}
+      >
+        <View style={styles.headerTopRow}>
+          <Text style={styles.overline}>LOBBY</Text>
+          <View style={styles.codePill}>
+            <Text style={styles.codeLabel}>CODE</Text>
+            <Text style={styles.codeValue}>{circleCode || "----"}</Text>
+          </View>
         </View>
+        <Text style={styles.title}>Circle members.</Text>
+        <Text style={styles.helper}>
+          {stage === "selecting"
+            ? "Heading into task selection…"
+            : isAdmin
+              ? "Kick things off once everyone's in."
+              : "Waiting for the admin to start."}
+        </Text>
+      </Animated.View>
 
-        <Text style={styles.title}>Circle{"\n"}Members</Text>
-        <Text style={styles.subtitle}>Get your friends onboard</Text>
-
-        {loading && members.length === 0 ? (
-          <View style={styles.loadingBox}>
-            <ActivityIndicator />
-            <Text style={styles.loadingText}>Loading members</Text>
+      <ScrollView
+        style={styles.list}
+        contentContainerStyle={styles.listContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {loading && list.length === 0 ? (
+          <View style={styles.statusBlock}>
+            <ActivityIndicator color={Colors.text.primary} size="small" />
+            <Text style={styles.statusText}>Loading members…</Text>
+          </View>
+        ) : list.length === 0 ? (
+          <View style={styles.statusBlock}>
+            <Text style={styles.statusTitle}>No one here yet</Text>
+            <Text style={styles.statusText}>
+              Share code {circleCode || "—"} to get your friends in.
+            </Text>
           </View>
         ) : (
-          <FlatList
-            data={list}
-            renderItem={renderMember}
-            keyExtractor={(m) => m.user_id}
-            scrollEnabled={false}
-            contentContainerStyle={styles.listContent}
-          />
+          list.map((m) => {
+            const name =
+              (m.first_name ?? "").trim() || `User ${m.user_id.slice(0, 6)}`;
+            const showAdmin = (m.role ?? "") === "admin";
+            return (
+              <View key={m.user_id} style={styles.row}>
+                <View style={styles.avatar}>
+                  <Text style={styles.avatarText}>{initialOf(name)}</Text>
+                </View>
+                <Text style={styles.rowName} numberOfLines={1}>
+                  {name}
+                </Text>
+                {showAdmin ? (
+                  <View style={styles.adminTag}>
+                    <Ionicons
+                      name="shield-checkmark"
+                      size={12}
+                      color={Colors.accent.gold}
+                    />
+                    <Text style={styles.adminTagText}>Admin</Text>
+                  </View>
+                ) : null}
+              </View>
+            );
+          })
         )}
+      </ScrollView>
 
-        {isAdmin ? (
+      {isAdmin ? (
+        <View style={styles.footer}>
           <Pressable
-            style={[styles.selectTasksButton, starting ? styles.buttonDisabled : null]}
             onPress={handleSelectTasks}
-            disabled={starting}
+            disabled={disabled}
+            style={({ pressed }) => [
+              styles.primary,
+              disabled && styles.primaryDisabled,
+              pressed && !disabled && styles.primaryPressed,
+            ]}
           >
             {starting ? (
-              <View style={styles.loadingRow}>
-                <ActivityIndicator />
-                <Text style={styles.selectTasksText}>Starting</Text>
-              </View>
+              <ActivityIndicator color={Colors.brand.greenText} size="small" />
             ) : (
-              <>
-                <Text style={styles.selectTasksText}>Select tasks</Text>
-                <Ionicons name="arrow-forward" size={20} color="#000000" />
-              </>
+              <Text style={styles.primaryText}>Move to task selection</Text>
             )}
           </Pressable>
-        ) : null}
-      </View>
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 }
 
+const PRIMARY_HEIGHT = 54;
+const AVATAR = 36;
+
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: BG },
-  container: { flex: 1, backgroundColor: BG, paddingHorizontal: 22, paddingTop: 40, paddingBottom: 40 },
-
-  codePill: {
-    position: "absolute",
-    top: 18,
-    right: 22,
-    backgroundColor: "#EDE6F7",
-    borderWidth: 1,
-    borderColor: BORDER,
-    borderRadius: 6,
-    paddingVertical: 10,
-    paddingHorizontal: 18,
-    shadowColor: "#000",
-    shadowOpacity: 0.15,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 3,
+  safeArea: {
+    flex: 1,
+    backgroundColor: Colors.bg.base,
   },
-  codeText: { fontSize: 16, fontWeight: "700", color: TEXT_PRIMARY },
-
-  title: { fontSize: 44, fontWeight: "800", color: TEXT_PRIMARY, textAlign: "center", lineHeight: 48, marginTop: 40 },
-  subtitle: { marginTop: 10, fontSize: 16, fontWeight: "500", color: "rgba(0,0,0,0.45)", textAlign: "center" },
-
-  loadingBox: { marginTop: 30, alignItems: "center", gap: 10 },
-  loadingText: { fontSize: 14, fontWeight: "600", color: "rgba(0,0,0,0.55)" },
-
-  listContent: { marginTop: 28, gap: 14 },
-
-  memberRow: {
-    height: 56,
-    backgroundColor: CARD_BG,
-    borderWidth: 1,
-    borderColor: BORDER,
-    borderRadius: 2,
-    paddingHorizontal: 18,
+  header: {
+    paddingHorizontal: Spacing.screenHorizontal,
+    paddingTop: Spacing.screenTop,
+    paddingBottom: 16,
+    gap: 6,
+  },
+  headerTopRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    marginBottom: 10,
   },
-  memberName: { fontSize: 18, fontWeight: "700", color: TEXT_PRIMARY },
-  adminTag: { fontSize: 12, fontWeight: "600", color: "rgba(0,0,0,0.45)" },
-
-  selectTasksButton: {
-    position: "absolute",
-    bottom: 28,
-    right: 22,
-    backgroundColor: "#CFA3FF",
-    borderWidth: 1,
-    borderColor: BORDER,
-    borderRadius: 6,
-    paddingVertical: 14,
-    paddingHorizontal: 18,
+  overline: {
+    ...Typography.overline,
+    letterSpacing: 1.6,
+  },
+  codePill: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    shadowColor: "#000",
-    shadowOpacity: 0.18,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 4,
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.bg.card,
   },
-  buttonDisabled: { opacity: 0.75 },
-  selectTasksText: { fontSize: 16, fontWeight: "700", color: TEXT_PRIMARY },
-  loadingRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  codeLabel: {
+    ...Typography.caption,
+    letterSpacing: 1.2,
+    fontWeight: "600",
+  },
+  codeValue: {
+    ...Typography.caption,
+    color: Colors.text.primary,
+    fontWeight: "700",
+    letterSpacing: 2,
+  },
+  title: {
+    ...Typography.display,
+    fontSize: 30,
+  },
+  helper: {
+    ...Typography.label,
+    marginTop: 2,
+  },
+  list: {
+    flex: 1,
+  },
+  listContent: {
+    paddingHorizontal: Spacing.screenHorizontal,
+    paddingBottom: 32,
+    gap: 10,
+  },
+  row: {
+    minHeight: 60,
+    paddingHorizontal: Spacing.cardPadding,
+    paddingVertical: 12,
+    borderRadius: Radius.cardSm,
+    backgroundColor: Colors.bg.card,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  avatar: {
+    width: AVATAR,
+    height: AVATAR,
+    borderRadius: AVATAR / 2,
+    backgroundColor: Colors.bg.cardActive,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarText: {
+    ...Typography.label,
+    color: Colors.text.primary,
+    fontWeight: "700",
+  },
+  rowName: {
+    ...Typography.body,
+    flex: 1,
+  },
+  adminTag: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.bg.cardActive,
+  },
+  adminTagText: {
+    ...Typography.caption,
+    color: Colors.accent.gold,
+    fontWeight: "600",
+  },
+  statusBlock: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 56,
+    gap: 8,
+  },
+  statusTitle: {
+    ...Typography.body,
+    fontWeight: "600",
+  },
+  statusText: {
+    ...Typography.label,
+    textAlign: "center",
+  },
+  footer: {
+    paddingHorizontal: Spacing.screenHorizontal,
+    paddingTop: 8,
+    paddingBottom: 12,
+    backgroundColor: Colors.bg.base,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+  },
+  primary: {
+    height: PRIMARY_HEIGHT,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.brand.green,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  primaryPressed: {
+    opacity: 0.8,
+  },
+  primaryDisabled: {
+    opacity: 0.45,
+  },
+  primaryText: {
+    ...Typography.body,
+    color: Colors.brand.greenText,
+    fontWeight: "600",
+  },
 });

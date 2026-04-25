@@ -1,18 +1,25 @@
-// select-tasks.tsx (full updated file)
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
-  FlatList,
+  Animated,
+  Easing,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
-  ActivityIndicator,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "../src/lib/supabase";
+import {
+  Colors,
+  Radius,
+  Spacing,
+  Typography,
+} from "../src/constants/design";
 
 type TaskOption = {
   id: string;
@@ -21,25 +28,47 @@ type TaskOption = {
 
 type Level = "easy" | "medium" | "hard";
 
-const BG = "#F8EEFF";
-const TEXT_PRIMARY = "#000000";
-const TEXT_SECONDARY = "rgba(0,0,0,0.45)";
-const CARD_BG = "rgba(0,0,0,0.05)";
-const SELECTED_BG = "rgba(135,87,239,0.61)";
-const BORDER = "#000000";
+type StoredSelection = {
+  level?: unknown;
+  tasks?: unknown;
+};
 
-function normalizeLevel(x: any, fallback: Level): Level {
+function normalizeLevel(x: unknown, fallback: Level): Level {
   return x === "easy" || x === "medium" || x === "hard" ? x : fallback;
 }
+
+const TASKS: readonly TaskOption[] = [
+  { id: "run_3k", label: "3 Km Run" },
+  { id: "gym_45", label: "Gym session 45+ min" },
+  { id: "sleep_7", label: "Sleep 7+ hours" },
+  { id: "classes_all", label: "Attend all classes today" },
+  { id: "study_1h", label: "Study deep focus 1 hour" },
+  { id: "wake_before_8", label: "Wake up before 8 AM" },
+  { id: "water_2l", label: "Drink 2L of water" },
+  { id: "screen_3h", label: "Limit screen time to 3hrs" },
+  { id: "meals_3", label: "Eat all 3 meals of the day" },
+  { id: "steps_10k", label: "Hit 10,000 steps" },
+  { id: "stretch_10", label: "Stretch 10 minutes" },
+  { id: "read_20", label: "Read 20 pages" },
+  { id: "meditate_10", label: "Meditate 10 minutes" },
+  { id: "journal_5", label: "Journal 5 minutes" },
+  { id: "clean_10", label: "Clean room 10 minutes" },
+  { id: "project_45", label: "Work on side project 45 minutes" },
+  { id: "plan_tomorrow", label: "Plan tomorrow in 5 minutes" },
+];
 
 export default function SelectTasksScreen() {
   const params = useLocalSearchParams<{ level?: string; circleId?: string }>();
 
   const levelRaw = Array.isArray(params.level) ? params.level[0] : params.level;
-  const circleIdRaw = Array.isArray(params.circleId) ? params.circleId[0] : params.circleId;
+  const circleIdRaw = Array.isArray(params.circleId)
+    ? params.circleId[0]
+    : params.circleId;
 
   const level: Level =
-    levelRaw === "medium" || levelRaw === "hard" || levelRaw === "easy" ? levelRaw : "easy";
+    levelRaw === "medium" || levelRaw === "hard" || levelRaw === "easy"
+      ? levelRaw
+      : "easy";
 
   const { minSelect, maxSelect } = useMemo(() => {
     if (level === "medium") return { minSelect: 8, maxSelect: 10 };
@@ -47,36 +76,21 @@ export default function SelectTasksScreen() {
     return { minSelect: 5, maxSelect: 6 };
   }, [level]);
 
-  const tasks: TaskOption[] = useMemo(
-    () => [
-      { id: "run_3k", label: "3 Km Run" },
-      { id: "gym_45", label: "Gym session 45+ min" },
-      { id: "sleep_7", label: "Sleep 7+ hours" },
-      { id: "classes_all", label: "Attend all classes today" },
-      { id: "study_1h", label: "Study deep focus 1 hour" },
-      { id: "wake_before_8", label: "Wake up before 8 AM" },
-      { id: "water_2l", label: "Drink 2L of water" },
-      { id: "screen_3h", label: "Limit screen time to 3hrs" },
-      { id: "meals_3", label: "Eat all 3 meals of the day" },
-      { id: "steps_10k", label: "Hit 10,000 steps" },
-      { id: "stretch_10", label: "Stretch 10 minutes" },
-      { id: "read_20", label: "Read 20 pages" },
-      { id: "meditate_10", label: "Meditate 10 minutes" },
-      { id: "journal_5", label: "Journal 5 minutes" },
-      { id: "clean_10", label: "Clean room 10 minutes" },
-      { id: "project_45", label: "Work on side project 45 minutes" },
-      { id: "plan_tomorrow", label: "Plan tomorrow in 5 minutes" },
-    ],
-    []
-  );
-
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(true);
 
-  // FIX: remember selection + finalized tasks
-  // If circle_tasks already exists -> go /circle-home
-  // Else if this user has a row in circle_task_selections -> skip this screen -> go /loading
+  const headerAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(headerAnim, {
+      toValue: 1,
+      duration: 520,
+      easing: Easing.out(Easing.exp),
+      useNativeDriver: true,
+    }).start();
+  }, [headerAnim]);
+
   useEffect(() => {
     let alive = true;
 
@@ -119,14 +133,12 @@ export default function SelectTasksScreen() {
 
       if (!alive) return;
 
-      const hasSelection =
-        !selErr &&
-        selRow &&
-        Array.isArray((selRow as any).tasks) &&
-        ((selRow as any).tasks.length ?? 0) > 0;
+      const stored = (selRow ?? null) as StoredSelection | null;
+      const storedTasks = Array.isArray(stored?.tasks) ? stored?.tasks : [];
+      const hasSelection = !selErr && stored && storedTasks.length > 0;
 
       if (hasSelection) {
-        const storedLevel = normalizeLevel((selRow as any).level, level);
+        const storedLevel = normalizeLevel(stored?.level, level);
         router.replace({
           pathname: "/loading",
           params: { circleId: circleIdRaw, level: storedLevel },
@@ -188,21 +200,19 @@ export default function SelectTasksScreen() {
       return;
     }
 
-    const selectedLabels = tasks
-      .filter((t) => selectedIds.includes(t.id))
-      .map((t) => t.label);
+    const selectedLabels = TASKS.filter((t) => selectedIds.includes(t.id)).map(
+      (t) => t.label
+    );
 
-    const { error } = await supabase
-      .from("circle_task_selections")
-      .upsert(
-        {
-          circle_id: circleIdRaw,
-          user_id: userId,
-          level,
-          tasks: selectedLabels,
-        },
-        { onConflict: "circle_id,user_id" }
-      );
+    const { error } = await supabase.from("circle_task_selections").upsert(
+      {
+        circle_id: circleIdRaw,
+        user_id: userId,
+        level,
+        tasks: selectedLabels,
+      },
+      { onConflict: "circle_id,user_id" }
+    );
 
     setSaving(false);
 
@@ -217,56 +227,108 @@ export default function SelectTasksScreen() {
     });
   };
 
-  const renderItem = ({ item }: { item: TaskOption }) => {
-    const isSelected = selectedIds.includes(item.id);
-
-    return (
-      <Pressable
-        onPress={() => toggle(item.id)}
-        style={[styles.taskRow, isSelected ? styles.taskSelected : styles.taskUnselected]}
-        disabled={saving}
-      >
-        <Text style={styles.taskText}>{item.label}</Text>
-      </Pressable>
-    );
-  };
-
   if (checking) {
     return (
-      <SafeAreaView style={styles.safeArea}>
-        <View style={[styles.container, { justifyContent: "center", alignItems: "center", gap: 10 }]}>
-          <ActivityIndicator />
-          <Text style={{ color: TEXT_SECONDARY, fontWeight: "600" }}>Checking your circle...</Text>
+      <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
+        <View style={styles.checkingBox}>
+          <ActivityIndicator color={Colors.text.primary} />
+          <Text style={styles.checkingText}>Checking your circle…</Text>
         </View>
       </SafeAreaView>
     );
   }
 
+  const canProceed = selectedIds.length >= minSelect && !saving;
+  const countLabel = `${selectedIds.length} / ${maxSelect}`;
+  const levelCopy = level === "hard" ? "Hard" : level === "medium" ? "Medium" : "Easy";
+
+  const headerTranslate = headerAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [12, 0],
+  });
+
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <View style={styles.container}>
-        <Text style={styles.title}>Select from the{"\n"}below tasks</Text>
-        <Text style={styles.subtitle}>Choose them in an order of{"\n"}preference</Text>
+    <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
+      <Animated.View
+        style={[
+          styles.header,
+          { opacity: headerAnim, transform: [{ translateY: headerTranslate }] },
+        ]}
+      >
+        <View style={styles.headerTopRow}>
+          <Text style={styles.overline}>{levelCopy.toUpperCase()} TRACK</Text>
+          <View style={styles.countPill}>
+            <Text style={styles.countText}>{countLabel}</Text>
+          </View>
+        </View>
+        <Text style={styles.title}>Pick your tasks.</Text>
+        <Text style={styles.helper}>
+          Tap {minSelect}
+          {minSelect === maxSelect ? "" : `–${maxSelect}`} you'll commit to each day.
+        </Text>
+      </Animated.View>
 
-        <FlatList
-          data={tasks}
-          keyExtractor={(t) => t.id}
-          renderItem={renderItem}
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-        />
+      <ScrollView
+        style={styles.list}
+        contentContainerStyle={styles.listContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {TASKS.map((t) => {
+          const orderIndex = selectedIds.indexOf(t.id);
+          const isSelected = orderIndex >= 0;
+          return (
+            <Pressable
+              key={t.id}
+              onPress={() => toggle(t.id)}
+              disabled={saving}
+              style={({ pressed }) => [
+                styles.row,
+                isSelected && styles.rowSelected,
+                pressed && !isSelected && styles.rowPressed,
+              ]}
+            >
+              <View style={styles.rowLeading}>
+                {isSelected ? (
+                  <View style={styles.orderChip}>
+                    <Text style={styles.orderChipText}>{orderIndex + 1}</Text>
+                  </View>
+                ) : (
+                  <View style={styles.orderDot} />
+                )}
+                <Text style={styles.rowLabel} numberOfLines={2}>
+                  {t.label}
+                </Text>
+              </View>
+              {isSelected ? (
+                <Ionicons
+                  name="checkmark-circle"
+                  size={22}
+                  color={Colors.brand.greenBright}
+                />
+              ) : null}
+            </Pressable>
+          );
+        })}
+      </ScrollView>
 
-        <Pressable style={styles.nextButton} onPress={handleNext} disabled={saving}>
+      <View style={styles.footer}>
+        <Pressable
+          onPress={handleNext}
+          disabled={!canProceed}
+          style={({ pressed }) => [
+            styles.primary,
+            !canProceed && styles.primaryDisabled,
+            pressed && canProceed && styles.primaryPressed,
+          ]}
+        >
           {saving ? (
-            <>
-              <ActivityIndicator color="#FFFFFF" />
-              <Text style={styles.nextButtonText}>Saving</Text>
-            </>
+            <ActivityIndicator color={Colors.brand.greenText} size="small" />
           ) : (
-            <>
-              <Text style={styles.nextButtonText}>Next</Text>
-              <Ionicons name="chevron-forward" size={20} color="#666666" />
-            </>
+            <Text style={styles.primaryText}>
+              {selectedIds.length < minSelect
+                ? `Pick ${minSelect - selectedIds.length} more`
+                : "Lock in tasks"}
+            </Text>
           )}
         </Pressable>
       </View>
@@ -274,72 +336,138 @@ export default function SelectTasksScreen() {
   );
 }
 
+const PRIMARY_HEIGHT = 54;
+const ROW_MIN_HEIGHT = 64;
+const ORDER_CHIP = 28;
+
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: BG },
-  container: {
+  safeArea: {
     flex: 1,
-    backgroundColor: BG,
-    paddingHorizontal: 22,
-    paddingTop: 10,
+    backgroundColor: Colors.bg.base,
   },
-  title: {
-    marginTop: 24,
-    fontSize: 36,
-    fontWeight: "800",
-    color: TEXT_PRIMARY,
-    textAlign: "center",
-    lineHeight: 38,
-  },
-  subtitle: {
-    marginTop: 10,
-    marginBottom: 18,
-    fontSize: 16,
-    fontWeight: "500",
-    color: TEXT_SECONDARY,
-    textAlign: "center",
-    lineHeight: 22,
-  },
-  listContent: {
-    paddingTop: 6,
-    paddingBottom: 24,
-  },
-  taskRow: {
-    height: 54,
-    borderWidth: 1,
-    borderColor: BORDER,
-    borderRadius: 6,
+  checkingBox: {
+    flex: 1,
+    alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 18,
-    marginBottom: 14,
-    shadowColor: "#000",
-    shadowOpacity: 0.18,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 3,
+    gap: Spacing.inlineGap,
   },
-  taskUnselected: { backgroundColor: CARD_BG },
-  taskSelected: { backgroundColor: SELECTED_BG },
-  taskText: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: TEXT_PRIMARY,
+  checkingText: {
+    ...Typography.label,
   },
-  nextButton: {
-    backgroundColor: "#000000",
-    borderWidth: 1,
-    borderColor: "#E0E0E0",
-    borderRadius: 8,
-    paddingVertical: 14,
-    paddingHorizontal: 20,
+  header: {
+    paddingHorizontal: Spacing.screenHorizontal,
+    paddingTop: Spacing.screenTop,
+    paddingBottom: 18,
+    gap: 6,
+  },
+  headerTopRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginTop: 20,
-    marginBottom: 24,
+    marginBottom: 10,
   },
-  nextButtonText: {
-    fontSize: 16,
+  overline: {
+    ...Typography.overline,
+    letterSpacing: 1.6,
+  },
+  countPill: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.bg.card,
+  },
+  countText: {
+    ...Typography.caption,
+    color: Colors.text.primary,
     fontWeight: "600",
-    color: "#FFFFFF",
+  },
+  title: {
+    ...Typography.display,
+    fontSize: 30,
+  },
+  helper: {
+    ...Typography.label,
+    marginTop: 2,
+  },
+  list: {
+    flex: 1,
+  },
+  listContent: {
+    paddingHorizontal: Spacing.screenHorizontal,
+    paddingBottom: 24,
+    gap: 10,
+  },
+  row: {
+    minHeight: ROW_MIN_HEIGHT,
+    paddingHorizontal: Spacing.cardPadding,
+    paddingVertical: 12,
+    borderRadius: Radius.cardSm,
+    backgroundColor: Colors.bg.card,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  rowPressed: {
+    backgroundColor: Colors.bg.cardActive,
+  },
+  rowSelected: {
+    backgroundColor: Colors.bg.cardActive,
+  },
+  rowLeading: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+  },
+  orderDot: {
+    width: ORDER_CHIP,
+    height: ORDER_CHIP,
+    borderRadius: ORDER_CHIP / 2,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+  },
+  orderChip: {
+    width: ORDER_CHIP,
+    height: ORDER_CHIP,
+    borderRadius: ORDER_CHIP / 2,
+    backgroundColor: Colors.brand.greenBright,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  orderChipText: {
+    ...Typography.caption,
+    color: Colors.bg.base,
+    fontWeight: "700",
+  },
+  rowLabel: {
+    ...Typography.body,
+    flex: 1,
+  },
+  footer: {
+    paddingHorizontal: Spacing.screenHorizontal,
+    paddingTop: 8,
+    paddingBottom: 12,
+    backgroundColor: Colors.bg.base,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+  },
+  primary: {
+    height: PRIMARY_HEIGHT,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.brand.green,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  primaryPressed: {
+    opacity: 0.8,
+  },
+  primaryDisabled: {
+    opacity: 0.45,
+  },
+  primaryText: {
+    ...Typography.body,
+    color: Colors.brand.greenText,
+    fontWeight: "600",
   },
 });
