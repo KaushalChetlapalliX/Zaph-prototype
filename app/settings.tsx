@@ -4,6 +4,7 @@ import {
   Alert,
   Animated,
   Easing,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -158,6 +159,15 @@ export default function Settings() {
   }, []);
 
   const handleSignOut = useCallback(() => {
+    if (Platform.OS === "web") {
+      const ok =
+        typeof window !== "undefined" &&
+        window.confirm(
+          "Sign out? You'll need to log back in to see your circles and streaks.",
+        );
+      if (ok) performSignOut();
+      return;
+    }
     Alert.alert(
       "Sign out?",
       "You'll need to log back in to see your circles and streaks.",

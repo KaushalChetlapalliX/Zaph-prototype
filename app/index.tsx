@@ -102,29 +102,54 @@ export default function Index() {
     ).start();
   }, [mountAnim, digitAnims, barAnims]);
 
-  const goToPage = (nextPage: number) => {
-    scrollRef.current?.scrollTo({ x: nextPage * width, animated: true });
-    setPage(nextPage);
-  };
-
-  const handleNext = () => {
-    if (page >= PAGE_COUNT - 1) {
-      router.replace("/welcome");
-      return;
-    }
-    goToPage(page + 1);
-  };
-
   const handleSkip = () => {
     router.replace("/welcome");
   };
 
-  const handleScrollEnd = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const nextPage = Math.round(event.nativeEvent.contentOffset.x / width);
-    if (nextPage !== page) setPage(nextPage);
+  const scrollX = useRef(new Animated.Value(0)).current;
+
+  const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const x = event.nativeEvent.contentOffset.x;
+    scrollX.setValue(x);
+    const next = width > 0 ? Math.round(x / width) : 0;
+    if (next !== page && next >= 0 && next < PAGE_COUNT) setPage(next);
   };
 
   const isLast = page === PAGE_COUNT - 1;
+
+  const pageStyle = (index: number) => {
+    const inputRange = [
+      (index - 1) * width,
+      index * width,
+      (index + 1) * width,
+    ];
+    return {
+      opacity: scrollX.interpolate({
+        inputRange,
+        outputRange: [0.35, 1, 0.35],
+        extrapolate: "clamp" as const,
+      }),
+      transform: [
+        {
+          perspective: 1000,
+        },
+        {
+          rotateY: scrollX.interpolate({
+            inputRange,
+            outputRange: ["35deg", "0deg", "-35deg"],
+            extrapolate: "clamp" as const,
+          }),
+        },
+        {
+          scale: scrollX.interpolate({
+            inputRange,
+            outputRange: [0.9, 1, 0.9],
+            extrapolate: "clamp" as const,
+          }),
+        },
+      ],
+    };
+  };
 
   const mountOpacity = mountAnim;
   const mountTranslate = mountAnim.interpolate({
@@ -150,16 +175,12 @@ export default function Index() {
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.topRow}>
         <Text style={styles.brand}>ZAPH</Text>
-        {!isLast ? (
-          <Pressable
-            onPress={handleSkip}
-            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-          >
-            <Text style={styles.skip}>Skip</Text>
-          </Pressable>
-        ) : (
-          <View style={styles.skipPlaceholder} />
-        )}
+        <Pressable
+          onPress={handleSkip}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+        >
+          <Text style={styles.skip}>{isLast ? "Get started" : "Skip"}</Text>
+        </Pressable>
       </View>
 
       <Animated.View
@@ -171,18 +192,18 @@ export default function Index() {
           },
         ]}
       >
-        <ScrollView
-          ref={scrollRef}
+        <Animated.ScrollView
+          ref={scrollRef as never}
           horizontal
           pagingEnabled
           bounces={false}
           decelerationRate="fast"
           showsHorizontalScrollIndicator={false}
-          onMomentumScrollEnd={handleScrollEnd}
+          onScroll={handleScroll}
           scrollEventThrottle={16}
           overScrollMode="never"
         >
-          <View style={[styles.page, { width }]}>
+          <Animated.View style={[styles.page, { width }, pageStyle(0)]}>
             <View style={styles.visualArea}>
               <Image
                 source={require("../assets/icon.png")}
@@ -199,9 +220,9 @@ export default function Index() {
                 A social accountability game for small friend groups.
               </Text>
             </View>
-          </View>
+          </Animated.View>
 
-          <View style={[styles.page, { width }]}>
+          <Animated.View style={[styles.page, { width }, pageStyle(1)]}>
             <View style={styles.visualArea}>
               <View style={styles.codeRow}>
                 {SAMPLE_CODE.split("").map((digit, idx) => {
@@ -232,9 +253,9 @@ export default function Index() {
                 Create one and share the code with your friends, or join theirs.
               </Text>
             </View>
-          </View>
+          </Animated.View>
 
-          <View style={[styles.page, { width }]}>
+          <Animated.View style={[styles.page, { width }, pageStyle(2)]}>
             <View style={styles.visualArea}>
               <View style={styles.board}>
                 {LEADERBOARD.map((row, idx) => {
@@ -279,8 +300,8 @@ export default function Index() {
                 Everyone picks tasks. Whoever finishes the most wins the week.
               </Text>
             </View>
-          </View>
-        </ScrollView>
+          </Animated.View>
+        </Animated.ScrollView>
       </Animated.View>
 
       <View style={styles.footer}>
@@ -292,13 +313,6 @@ export default function Index() {
             />
           ))}
         </View>
-
-        <Pressable
-          onPress={handleNext}
-          style={({ pressed }) => [styles.cta, pressed && styles.ctaPressed]}
-        >
-          <Text style={styles.ctaText}>{isLast ? "Get started" : "Next"}</Text>
-        </Pressable>
       </View>
     </SafeAreaView>
   );
