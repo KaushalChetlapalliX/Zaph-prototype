@@ -56,6 +56,10 @@ type Props = {
   empty: boolean;
   // Cumulative weekly points per user per day index 0..6 (Mon..Sun).
   weeklyByUserDay: Record<string, number[]>;
+  // Hard ceiling = tasks_per_day * 7 * points_per_task (theoretical max).
+  weeklyCeiling: number;
+  // 1..7 — only draw line points up to this day index (inclusive).
+  daysElapsed: number;
   onExpand?: (slide: number) => void;
 };
 
@@ -80,6 +84,8 @@ export function LeaderboardWidget({
   loading,
   empty,
   weeklyByUserDay,
+  weeklyCeiling,
+  daysElapsed,
   onExpand,
 }: Props) {
   const { width: winWidth } = useWindowDimensions();
@@ -281,26 +287,23 @@ export function LeaderboardWidget({
   };
 
   const renderLineSlide = () => {
-    // X axis: 7 days of the week. Y axis: cumulative weekly points.
-    // One polyline per user; each line ends with the user's name.
-    const padL = 28;
+    // X axis: day 0 (hidden origin) through day 7. Y axis: cumulative points,
+    // ceilinged at the theoretical weekly max so lines stay below the top.
+    const padL = 40; // room for y-axis numeric labels
     const padR = 64; // room for names at the right edge
     const padT = 16;
     const padB = 28;
-    const chartW = Math.max(0, slideWidth - 40); // card padding
+    const chartW = Math.max(0, slideWidth - 40);
     const innerW = Math.max(0, chartW - padL - padR);
     const innerH = 180;
     const totalH = innerH + padT + padB;
 
     const users = leaderboard.slice(0, TOP_LIMIT);
-    let yMax = 0;
-    for (const u of users) {
-      const series = weeklyByUserDay[u.userId] ?? [];
-      for (const v of series) if (v > yMax) yMax = v;
-    }
-    if (yMax <= 0) yMax = 1;
+    const yMax = weeklyCeiling > 0 ? weeklyCeiling : 1;
+    const lastDay = Math.min(7, Math.max(1, daysElapsed));
 
-    const xFor = (dayIdx: number) => padL + (dayIdx / 6) * innerW;
+    // 8 stops: index 0 = hidden origin, 1..7 = labeled days.
+    const xFor = (dayIdx: number) => padL + (dayIdx / 7) * innerW;
     const yFor = (val: number) => padT + innerH - (val / yMax) * innerH;
 
     return (
@@ -321,20 +324,33 @@ export function LeaderboardWidget({
                 height={totalH}
                 viewBox={`0 0 ${chartW} ${totalH}`}
               >
-                {[0, 0.5, 1].map((g, i) => (
-                  <Polyline
-                    key={`grid-${i}`}
-                    points={`${padL},${padT + innerH * g} ${padL + innerW},${padT + innerH * g}`}
-                    fill="none"
-                    stroke={Colors.progressTrack}
-                    strokeWidth={1}
-                  />
-                ))}
+                {[0, 0.5, 1].map((g, i) => {
+                  const yVal = Math.round(yMax * (1 - g));
+                  return (
+                    <React.Fragment key={`grid-${i}`}>
+                      <Polyline
+                        points={`${padL},${padT + innerH * g} ${padL + innerW},${padT + innerH * g}`}
+                        fill="none"
+                        stroke={Colors.progressTrack}
+                        strokeWidth={1}
+                      />
+                      <SvgText
+                        x={padL - 6}
+                        y={padT + innerH * g + 3}
+                        fontSize={10}
+                        fill={Colors.text.secondary}
+                        textAnchor="end"
+                      >
+                        {yVal}
+                      </SvgText>
+                    </React.Fragment>
+                  );
+                })}
 
                 {DAY_LABELS.map((d, i) => (
                   <SvgText
                     key={`day-${i}`}
-                    x={xFor(i)}
+                    x={xFor(i + 1)}
                     y={padT + innerH + 18}
                     fontSize={10}
                     fill={Colors.text.secondary}
@@ -346,17 +362,18 @@ export function LeaderboardWidget({
 
                 {users.map((u, idx) => {
                   const series = weeklyByUserDay[u.userId] ?? [];
-                  if (series.length === 0) return null;
                   const isMe = u.userId === myUserId;
                   const color = isMe
                     ? Colors.brand.greenBright
                     : LINE_COLORS[idx % LINE_COLORS.length];
-                  const pts = series
-                    .map((v, i) => `${xFor(i)},${yFor(v)}`)
-                    .join(" ");
-                  const lastIdx = series.length - 1;
-                  const lastX = xFor(lastIdx);
-                  const lastY = yFor(series[lastIdx]);
+                  // Origin at day 0 = 0 pts; only draw through days that have actually elapsed.
+                  const coords: Array<[number, number]> = [[xFor(0), yFor(0)]];
+                  for (let d = 1; d <= lastDay; d++) {
+                    const v = series[d - 1] ?? 0;
+                    coords.push([xFor(d), yFor(v)]);
+                  }
+                  const pts = coords.map(([x, y]) => `${x},${y}`).join(" ");
+                  const [lastX, lastY] = coords[coords.length - 1];
                   return (
                     <React.Fragment key={u.userId}>
                       <Polyline

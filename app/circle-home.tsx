@@ -94,6 +94,7 @@ export default function CircleHome() {
   const [showAllTasks, setShowAllTasks] = useState(false);
   const [expandedSlide, setExpandedSlide] = useState<number | null>(null);
   const [activityOpen, setActivityOpen] = useState(false);
+  const [anchorMsState, setAnchorMsState] = useState<number | null>(null);
 
   const inFlightRef = useRef(false);
   const initialLoadedRef = useRef(false);
@@ -390,6 +391,7 @@ export default function CircleHome() {
         setMyWeekPoints(pointsByUser[uid] ?? 0);
         setActivity(activityList);
         setWeeklyByUserDay(byUserDay);
+        setAnchorMsState(anchorMs);
 
         if (!initialLoadedRef.current) {
           initialLoadedRef.current = true;
@@ -410,6 +412,12 @@ export default function CircleHome() {
 
   const totalCount = tasks.length;
   const maxWeeklyPoints = totalCount * 7 * POINTS_PER_TASK;
+  const daysElapsed = anchorMsState
+    ? Math.min(
+        7,
+        Math.max(1, Math.floor((Date.now() - anchorMsState) / 86400000) + 1),
+      )
+    : 1;
 
   const visibleTasks = showAllTasks ? tasks : tasks.slice(0, 5);
   const hiddenCount = tasks.length - visibleTasks.length;
@@ -513,6 +521,8 @@ export default function CircleHome() {
               weeklyByUserDay={weeklyByUserDay}
               loading={loading}
               empty={!loading && leaderboard.length === 0}
+              weeklyCeiling={maxWeeklyPoints}
+              daysElapsed={daysElapsed}
               onExpand={(s) => setExpandedSlide(s)}
             />
           </View>
@@ -713,6 +723,8 @@ export default function CircleHome() {
                   myPoints={myWeekPoints}
                   myUserId={myUserId}
                   weeklyByUserDay={weeklyByUserDay}
+                  weeklyCeiling={maxWeeklyPoints}
+                  daysElapsed={daysElapsed}
                   loading={false}
                   empty={false}
                 />
