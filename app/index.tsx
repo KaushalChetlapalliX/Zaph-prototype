@@ -175,12 +175,16 @@ export default function Index() {
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.topRow}>
         <Text style={styles.brand}>ZAPH</Text>
-        <Pressable
-          onPress={handleSkip}
-          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-        >
-          <Text style={styles.skip}>{isLast ? "Get started" : "Skip"}</Text>
-        </Pressable>
+        {!isLast ? (
+          <Pressable
+            onPress={handleSkip}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          >
+            <Text style={styles.skip}>Skip</Text>
+          </Pressable>
+        ) : (
+          <View style={styles.skipPlaceholder} />
+        )}
       </View>
 
       <Animated.View
@@ -313,6 +317,14 @@ export default function Index() {
             />
           ))}
         </View>
+        {isLast ? (
+          <Pressable
+            onPress={handleSkip}
+            style={({ pressed }) => [styles.cta, pressed && styles.ctaPressed]}
+          >
+            <Text style={styles.ctaText}>Get started</Text>
+          </Pressable>
+        ) : null}
       </View>
     </SafeAreaView>
   );

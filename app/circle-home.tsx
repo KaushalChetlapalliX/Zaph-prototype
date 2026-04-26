@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -8,29 +8,32 @@ import {
   ScrollView,
   Animated,
   Easing,
+  ActivityIndicator,
+  Modal,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { LinearGradient } from "expo-linear-gradient";
-import Svg, { Circle as SvgCircle } from "react-native-svg";
 import { supabase } from "../src/lib/supabase";
 import { TabBar } from "../src/components/TabBar";
-import { TaskCompleteSheet } from "../src/components/TaskCompleteSheet";
 import {
-  Colors,
-  ProgressGradient,
-  Radius,
-  Spacing,
-  Typography,
-} from "../src/constants/design";
+  LeaderboardWidget,
+  LeaderRow,
+} from "../src/components/LeaderboardWidget";
+import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
 
 const POLL_MS = 3000;
 const POINTS_PER_TASK = 5;
 
 type TaskItem = { key: string; title: string; done: boolean };
-type LeaderRow = { userId: string; name: string; points: number };
+type ActivityRow = {
+  id: string;
+  userId: string;
+  name: string;
+  taskTitle: string;
+  at: number;
+};
 
 function startOfDayLocal(d = new Date()) {
   const x = new Date(d);
@@ -52,25 +55,16 @@ function startOfWeekUTC(d = new Date()) {
   x.setUTCHours(0, 0, 0, 0);
   return x;
 }
-function endOfWeekUTC(d = new Date()) {
-  const s = startOfWeekUTC(d);
-  const e = new Date(s);
-  e.setUTCDate(e.getUTCDate() + 7);
-  return e;
+function relativeTime(ms: number) {
+  const diff = Math.max(0, Date.now() - ms);
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
 }
-
-function medalColor(rank: number): string {
-  if (rank === 1) return Colors.accent.gold;
-  if (rank === 2) return Colors.accent.silver;
-  if (rank === 3) return Colors.accent.bronze;
-  return Colors.bg.cardActive;
-}
-
-const RING_SIZE = 104;
-const RING_STROKE = 8;
-const RING_RADIUS = (RING_SIZE - RING_STROKE) / 2;
-const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
-const AnimatedCircle = Animated.createAnimatedComponent(SvgCircle);
 
 export default function CircleHome() {
   const params = useLocalSearchParams<{
@@ -89,15 +83,21 @@ export default function CircleHome() {
   const [loading, setLoading] = useState(true);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [leaderboard, setLeaderboard] = useState<LeaderRow[]>([]);
+  const [myUserId, setMyUserId] = useState<string | null>(null);
   const [myWeekPoints, setMyWeekPoints] = useState<number>(0);
-  const [sheetVisible, setSheetVisible] = useState(false);
+  const [activity, setActivity] = useState<ActivityRow[]>([]);
+  const [weeklyByUserDay, setWeeklyByUserDay] = useState<
+    Record<string, number[]>
+  >({});
   const [completing, setCompleting] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [showAllTasks, setShowAllTasks] = useState(false);
+  const [expandedSlide, setExpandedSlide] = useState<number | null>(null);
+  const [activityOpen, setActivityOpen] = useState(false);
 
   const inFlightRef = useRef(false);
   const initialLoadedRef = useRef(false);
   const mountAnim = useRef(new Animated.Value(0)).current;
-  const barsAnim = useRef(new Animated.Value(0)).current;
-  const ringAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     Animated.timing(mountAnim, {
@@ -175,122 +175,71 @@ export default function CircleHome() {
     if (!circleId) return;
     let alive = true;
 
-    const fetchLeaderboard = async (uid: string) => {
-      const wStart = startOfWeekUTC();
-      const wEnd = endOfWeekUTC();
-      const { data: rows } = await supabase
-        .from("task_completions")
-        .select("user_id, points")
-        .eq("circle_id", circleId)
-        .gte("completed_at", wStart.toISOString())
-        .lt("completed_at", wEnd.toISOString());
-
-      if (!rows) {
-        setLeaderboard([]);
-        setMyWeekPoints(0);
-        return;
-      }
-
-      type CompletionPts = { user_id: string; points?: number | null };
-      const pointsByUser: Record<string, number> = {};
-      for (const r of rows as unknown as CompletionPts[]) {
-        const id = String(r.user_id);
-        pointsByUser[id] =
-          (pointsByUser[id] ?? 0) + (Number(r.points) || POINTS_PER_TASK);
-      }
-
-      const userIds = Object.keys(pointsByUser);
-      const nameById: Record<string, string> = {};
-      if (userIds.length > 0) {
-        const { data: profs } = await supabase
-          .from("profiles")
-          .select("id, first_name")
-          .in("id", userIds);
-        if (profs) {
-          type Prof = { id: string; first_name?: string | null };
-          for (const p of profs as unknown as Prof[]) {
-            const nm = String(p.first_name ?? "").trim();
-            if (nm) nameById[String(p.id)] = nm;
-          }
-        }
-      }
-
-      const list: LeaderRow[] = userIds
-        .map((id) => ({
-          userId: id,
-          name: nameById[id] ?? "User",
-          points: pointsByUser[id] ?? 0,
-        }))
-        .sort((a, b) => b.points - a.points || a.name.localeCompare(b.name));
-
-      if (!alive) return;
-      setLeaderboard(list);
-      setMyWeekPoints(pointsByUser[uid] ?? 0);
-    };
-
     const fetchAll = async () => {
       if (inFlightRef.current) return;
       inFlightRef.current = true;
       try {
         const { data: userData } = await supabase.auth.getUser();
-        const uid = userData.user?.id;
+        const uid = userData.user?.id ?? null;
+        if (alive) setMyUserId(uid);
         if (!uid) {
           if (!alive) return;
           setTasks([]);
           setLeaderboard([]);
           setMyWeekPoints(0);
+          setActivity([]);
           setLoading(false);
           return;
         }
 
         const { data: ctRows } = await supabase
           .from("circle_tasks")
-          .select("position, task_id")
+          .select("position, task_id, created_at")
           .eq("circle_id", circleId)
           .order("position", { ascending: true });
 
         if (!alive) return;
 
-        if (!ctRows || ctRows.length === 0) {
-          setTasks([]);
-          await fetchLeaderboard(uid);
-          if (!initialLoadedRef.current) {
-            initialLoadedRef.current = true;
-            setLoading(false);
-          }
-          return;
-        }
-
-        type CT = { position: number; task_id: string };
-        const taskIds = (ctRows as unknown as CT[]).map((r) =>
-          String(r.task_id),
-        );
+        type CT = {
+          position: number;
+          task_id: string;
+          created_at?: string | null;
+        };
+        const ctList = (ctRows ?? []) as unknown as CT[];
+        const taskIds = ctList.map((r) => String(r.task_id));
         const uniqueIds = Array.from(new Set(taskIds));
 
-        const { data: tRows } = await supabase
-          .from("tasks")
-          .select("id, title")
-          .in("id", uniqueIds);
+        // Day-1 anchor = earliest circle_tasks.created_at, snapped to UTC midnight.
+        // Falls back to the start of the current UTC week if no timestamps exist.
+        const createdMs = ctList
+          .map((r) => (r.created_at ? new Date(r.created_at).getTime() : NaN))
+          .filter((n) => Number.isFinite(n)) as number[];
+        const anchorRaw =
+          createdMs.length > 0
+            ? Math.min(...createdMs)
+            : startOfWeekUTC().getTime();
+        const anchorDate = new Date(anchorRaw);
+        anchorDate.setUTCHours(0, 0, 0, 0);
+        const anchorMs = anchorDate.getTime();
 
-        if (!alive || !tRows) {
-          await fetchLeaderboard(uid);
-          if (!initialLoadedRef.current) {
-            initialLoadedRef.current = true;
-            setLoading(false);
-          }
-          return;
-        }
-
-        type T = { id: string; title: string };
         const titleById: Record<string, string> = {};
-        for (const t of tRows as unknown as T[]) {
-          const title = String(t.title ?? "").trim();
-          if (title) titleById[String(t.id)] = title;
+        if (uniqueIds.length > 0) {
+          const { data: tRows } = await supabase
+            .from("tasks")
+            .select("id, title")
+            .in("id", uniqueIds);
+          if (tRows) {
+            type T = { id: string; title: string };
+            for (const t of tRows as unknown as T[]) {
+              const title = String(t.title ?? "").trim();
+              if (title) titleById[String(t.id)] = title;
+            }
+          }
         }
 
         const dayStart = startOfDayLocal();
         const dayEnd = endOfDayLocal();
-        const { data: compRows } = await supabase
+        const { data: myDoneRows } = await supabase
           .from("task_completions")
           .select("task_id")
           .eq("circle_id", circleId)
@@ -299,9 +248,9 @@ export default function CircleHome() {
           .lte("completed_at", dayEnd.toISOString());
 
         const completedSet = new Set<string>();
-        if (compRows) {
+        if (myDoneRows) {
           type C = { task_id: string };
-          for (const c of compRows as unknown as C[]) {
+          for (const c of myDoneRows as unknown as C[]) {
             if (c.task_id) completedSet.add(String(c.task_id));
           }
         }
@@ -316,7 +265,132 @@ export default function CircleHome() {
 
         if (!alive) return;
         setTasks(next);
-        await fetchLeaderboard(uid);
+
+        // Weekly leaderboard window starts at the day-1 anchor (tasks creation).
+        const wStart = anchorDate;
+        const wEnd = new Date(anchorMs + 7 * 86400000);
+        const { data: weekRows } = await supabase
+          .from("task_completions")
+          .select("user_id, points, completed_at")
+          .eq("circle_id", circleId)
+          .gte("completed_at", wStart.toISOString())
+          .lt("completed_at", wEnd.toISOString());
+
+        type CompletionPts = {
+          user_id: string;
+          points?: number | null;
+          completed_at: string;
+        };
+        const pointsByUser: Record<string, number> = {};
+        const byUserDay: Record<string, number[]> = {};
+        if (weekRows) {
+          for (const r of weekRows as unknown as CompletionPts[]) {
+            const id = String(r.user_id);
+            const pts = Number(r.points) || POINTS_PER_TASK;
+            pointsByUser[id] = (pointsByUser[id] ?? 0) + pts;
+
+            const dayIdx = Math.min(
+              6,
+              Math.max(
+                0,
+                Math.floor(
+                  (new Date(r.completed_at).getTime() - anchorMs) / 86400000,
+                ),
+              ),
+            );
+            const arr = byUserDay[id] ?? new Array(7).fill(0);
+            arr[dayIdx] = (arr[dayIdx] ?? 0) + pts;
+            byUserDay[id] = arr;
+          }
+        }
+        // Convert per-day buckets to cumulative running totals.
+        for (const id of Object.keys(byUserDay)) {
+          const arr = byUserDay[id];
+          for (let i = 1; i < arr.length; i++) arr[i] += arr[i - 1];
+        }
+
+        const userIds = Object.keys(pointsByUser);
+
+        // Today's circle-wide activity feed.
+        const { data: feedRows } = await supabase
+          .from("task_completions")
+          .select("id, user_id, task_id, completed_at")
+          .eq("circle_id", circleId)
+          .gte("completed_at", dayStart.toISOString())
+          .lte("completed_at", dayEnd.toISOString())
+          .order("completed_at", { ascending: false })
+          .limit(20);
+
+        type FeedRow = {
+          id: string | number;
+          user_id: string;
+          task_id: string;
+          completed_at: string;
+        };
+        const feedList = (feedRows ?? []) as unknown as FeedRow[];
+        const feedUserIds = feedList.map((r) => String(r.user_id));
+        const feedTaskIds = feedList.map((r) => String(r.task_id));
+
+        const allUserIds = Array.from(new Set([...userIds, ...feedUserIds]));
+        const allTaskIds = Array.from(new Set([...uniqueIds, ...feedTaskIds]));
+
+        const nameById: Record<string, string> = {};
+        if (allUserIds.length > 0) {
+          const { data: profs } = await supabase
+            .from("profiles")
+            .select("id, first_name")
+            .in("id", allUserIds);
+          if (profs) {
+            type Prof = { id: string; first_name?: string | null };
+            for (const p of profs as unknown as Prof[]) {
+              const nm = String(p.first_name ?? "").trim();
+              if (nm) nameById[String(p.id)] = nm;
+            }
+          }
+        }
+
+        if (allTaskIds.length > 0) {
+          const missing = allTaskIds.filter((id) => !titleById[id]);
+          if (missing.length > 0) {
+            const { data: extraRows } = await supabase
+              .from("tasks")
+              .select("id, title")
+              .in("id", missing);
+            if (extraRows) {
+              type T = { id: string; title: string };
+              for (const t of extraRows as unknown as T[]) {
+                const title = String(t.title ?? "").trim();
+                if (title) titleById[String(t.id)] = title;
+              }
+            }
+          }
+        }
+
+        const list: LeaderRow[] = userIds
+          .map((id) => ({
+            userId: id,
+            name: nameById[id] ?? "User",
+            points: pointsByUser[id] ?? 0,
+          }))
+          .sort((a, b) => b.points - a.points || a.name.localeCompare(b.name));
+
+        const activityList: ActivityRow[] = feedList.map((r) => ({
+          id: String(r.id),
+          userId: String(r.user_id),
+          name:
+            String(r.user_id) === uid
+              ? "You"
+              : (nameById[String(r.user_id)] ?? "Someone"),
+          taskTitle: titleById[String(r.task_id)] ?? "a task",
+          at: new Date(r.completed_at).getTime(),
+        }));
+
+        if (!alive) return;
+        setLeaderboard(list);
+        setMyWeekPoints(pointsByUser[uid] ?? 0);
+        setActivity(activityList);
+        setWeeklyByUserDay(byUserDay);
+
         if (!initialLoadedRef.current) {
           initialLoadedRef.current = true;
           setLoading(false);
@@ -334,53 +408,24 @@ export default function CircleHome() {
     };
   }, [circleId]);
 
-  const remaining = useMemo(() => tasks.filter((t) => !t.done), [tasks]);
-  const doneCount = tasks.length - remaining.length;
   const totalCount = tasks.length;
-  const progressPct = totalCount === 0 ? 0 : doneCount / totalCount;
-  // Max weekly ceiling: every task, every day of the week, at full points.
   const maxWeeklyPoints = totalCount * 7 * POINTS_PER_TASK;
-  const [showAllTasks, setShowAllTasks] = useState(false);
+
   const visibleTasks = showAllTasks ? tasks : tasks.slice(0, 5);
   const hiddenCount = tasks.length - visibleTasks.length;
 
-  useEffect(() => {
-    if (loading) return;
-    barsAnim.stopAnimation();
-    barsAnim.setValue(0);
-    Animated.timing(barsAnim, {
-      toValue: 1,
-      duration: 620,
-      delay: 120,
-      easing: Easing.out(Easing.exp),
-      useNativeDriver: false,
-    }).start();
-  }, [loading, leaderboard.length, maxWeeklyPoints, barsAnim]);
-
-  useEffect(() => {
-    Animated.timing(ringAnim, {
-      toValue: progressPct,
-      duration: 520,
-      easing: Easing.out(Easing.exp),
-      useNativeDriver: true,
-    }).start();
-  }, [progressPct, ringAnim]);
-
-  const ringOffset = ringAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [RING_CIRCUMFERENCE, 0],
-  });
-
-  const openSheet = () => {
-    if (remaining.length === 0) {
-      Alert.alert("No tasks left", "You have completed all tasks for today.");
-      return;
-    }
-    setSheetVisible(true);
+  const toggleSelect = (key: string, done: boolean) => {
+    if (done) return;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   };
 
-  const completeTask = async (taskKey: string) => {
-    if (!circleId || completing) return;
+  const completeSelected = async () => {
+    if (!circleId || completing || selected.size === 0) return;
     setCompleting(true);
     try {
       const { data: userData } = await supabase.auth.getUser();
@@ -390,45 +435,40 @@ export default function CircleHome() {
         return;
       }
 
-      const { error } = await supabase.from("task_completions").insert({
+      const keys = Array.from(selected);
+      const rows = keys.map((taskId) => ({
         circle_id: circleId,
         user_id: uid,
-        task_id: taskKey,
+        task_id: taskId,
         completed_at: new Date().toISOString(),
         points: POINTS_PER_TASK,
-      });
+      }));
 
-      // 23505 = unique violation — task was already completed today.
-      // Skip point increment in that case but still close the sheet.
+      const { error } = await supabase.from("task_completions").insert(rows);
       const insertErr = error as { code?: string; message?: string } | null;
       if (insertErr && insertErr.code !== "23505") {
-        Alert.alert("Error", insertErr.message ?? "Unknown error");
+        Alert.alert("Error", insertErr.message ?? "Could not save.");
         return;
       }
 
       setTasks((prev) =>
-        prev.map((t) => (t.key === taskKey ? { ...t, done: true } : t)),
+        prev.map((t) => (selected.has(t.key) ? { ...t, done: true } : t)),
       );
-
-      if (!insertErr) {
-        setMyWeekPoints((p) => p + POINTS_PER_TASK);
-        setLeaderboard((prev) => {
-          const idx = prev.findIndex((r) => r.userId === uid);
-          const next =
-            idx >= 0
-              ? prev.map((r, i) =>
-                  i === idx ? { ...r, points: r.points + POINTS_PER_TASK } : r,
-                )
-              : [
-                  ...prev,
-                  { userId: uid, name: "You", points: POINTS_PER_TASK },
-                ];
-          return next.sort(
-            (a, b) => b.points - a.points || a.name.localeCompare(b.name),
-          );
-        });
-      }
-      setSheetVisible(false);
+      const earned = keys.length * POINTS_PER_TASK;
+      setMyWeekPoints((p) => p + earned);
+      setLeaderboard((prev) => {
+        const idx = prev.findIndex((r) => r.userId === uid);
+        const next =
+          idx >= 0
+            ? prev.map((r, i) =>
+                i === idx ? { ...r, points: r.points + earned } : r,
+              )
+            : [...prev, { userId: uid, name: "You", points: earned }];
+        return next.sort(
+          (a, b) => b.points - a.points || a.name.localeCompare(b.name),
+        );
+      });
+      setSelected(new Set());
     } finally {
       setCompleting(false);
     }
@@ -440,6 +480,8 @@ export default function CircleHome() {
     outputRange: [18, 0],
   });
 
+  const selectedCount = selected.size;
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <Animated.View
@@ -447,7 +489,10 @@ export default function CircleHome() {
       >
         <ScrollView
           style={styles.scroll}
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[
+            styles.scrollContent,
+            selectedCount > 0 ? styles.scrollContentWithBar : null,
+          ]}
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.header}>
@@ -457,152 +502,56 @@ export default function CircleHome() {
 
           <View style={styles.section}>
             <View style={styles.sectionHead}>
-              <Text style={styles.sectionTitle}>This week</Text>
+              <Text style={styles.sectionTitle}>Weekly leaderboard</Text>
               <Text style={styles.sectionMeta}>{myWeekPoints} pts</Text>
             </View>
-            {loading ? (
-              <View style={styles.board}>
-                <View style={styles.emptyInline}>
-                  <Text style={styles.emptyText}>Loading…</Text>
-                </View>
-              </View>
-            ) : leaderboard.length === 0 ? (
-              <View style={styles.board}>
-                <View style={styles.emptyInline}>
-                  <Text style={styles.emptyTitle}>No points yet</Text>
-                  <Text style={styles.emptyHelper}>
-                    Complete a task to light up the board.
-                  </Text>
-                </View>
-              </View>
-            ) : (
-              <View style={styles.board}>
-                {leaderboard.map((row, idx) => {
-                  const rank = idx + 1;
-                  const isTopThree = rank <= 3;
-                  const rawFill =
-                    maxWeeklyPoints > 0 ? row.points / maxWeeklyPoints : 0;
-                  const targetFill = Math.min(1, rawFill);
-                  const widthAnim = barsAnim.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: ["0%", `${targetFill * 100}%`],
-                  });
-                  return (
-                    <View key={row.userId} style={styles.boardRow}>
-                      <View
-                        style={[
-                          styles.medal,
-                          { backgroundColor: medalColor(rank) },
-                        ]}
-                      >
-                        <Text
-                          style={[
-                            styles.medalText,
-                            isTopThree && styles.medalTextTop,
-                          ]}
-                        >
-                          {rank}
-                        </Text>
-                      </View>
-                      <View style={styles.boardBody}>
-                        <View style={styles.boardTop}>
-                          <Text style={styles.boardName} numberOfLines={1}>
-                            {row.name}
-                          </Text>
-                          <Text style={styles.boardPts}>{row.points} pts</Text>
-                        </View>
-                        <View style={styles.barTrack}>
-                          <Animated.View
-                            style={[styles.barFill, { width: widthAnim }]}
-                          >
-                            <LinearGradient
-                              colors={[...ProgressGradient]}
-                              start={{ x: 0, y: 0 }}
-                              end={{ x: 1, y: 0 }}
-                              style={StyleSheet.absoluteFill}
-                            />
-                          </Animated.View>
-                        </View>
-                      </View>
-                    </View>
-                  );
-                })}
-              </View>
-            )}
+            <LeaderboardWidget
+              leaderboard={leaderboard}
+              maxWeeklyPoints={maxWeeklyPoints}
+              myPoints={myWeekPoints}
+              myUserId={myUserId}
+              weeklyByUserDay={weeklyByUserDay}
+              loading={loading}
+              empty={!loading && leaderboard.length === 0}
+              onExpand={(s) => setExpandedSlide(s)}
+            />
           </View>
 
-          <View style={styles.todayCard}>
-            <View style={styles.ringWrap}>
-              <Svg width={RING_SIZE} height={RING_SIZE}>
-                <SvgCircle
-                  cx={RING_SIZE / 2}
-                  cy={RING_SIZE / 2}
-                  r={RING_RADIUS}
-                  stroke={Colors.progressTrack}
-                  strokeWidth={RING_STROKE}
-                  fill="transparent"
-                />
-                <AnimatedCircle
-                  cx={RING_SIZE / 2}
-                  cy={RING_SIZE / 2}
-                  r={RING_RADIUS}
-                  stroke={Colors.brand.greenBright}
-                  strokeWidth={RING_STROKE}
-                  strokeDasharray={RING_CIRCUMFERENCE}
-                  strokeDashoffset={ringOffset}
-                  strokeLinecap="round"
-                  fill="transparent"
-                  transform={`rotate(-90 ${RING_SIZE / 2} ${RING_SIZE / 2})`}
-                />
-              </Svg>
-              <View style={styles.ringLabel} pointerEvents="none">
-                <Text style={styles.ringNumber}>
-                  {doneCount}
-                  <Text style={styles.ringDenom}>/{totalCount}</Text>
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Today's activity</Text>
+            {loading ? (
+              <View style={styles.emptyBlock}>
+                <Text style={styles.emptyText}>Loading…</Text>
+              </View>
+            ) : activity.length === 0 ? (
+              <View style={styles.emptyBlock}>
+                <Text style={styles.emptyTitle}>Quiet so far</Text>
+                <Text style={styles.emptyHelper}>
+                  Completions in this circle will show up here.
                 </Text>
               </View>
-            </View>
-            <View style={styles.todayBody}>
-              <Text style={styles.todayOverline}>Today</Text>
-              <Text style={styles.todayHeadline}>
-                {totalCount === 0
-                  ? "No tasks yet"
-                  : remaining.length === 0
-                    ? "All done."
-                    : `${remaining.length} to go.`}
-              </Text>
+            ) : (
               <Pressable
-                onPress={openSheet}
-                disabled={remaining.length === 0 || totalCount === 0}
-                style={({ pressed }) => [
-                  styles.cta,
-                  pressed && styles.ctaPressed,
-                  (remaining.length === 0 || totalCount === 0) &&
-                    styles.ctaDisabled,
-                ]}
+                onPress={() => setActivityOpen(true)}
+                style={styles.chatCard}
               >
-                <Text
-                  style={[
-                    styles.ctaText,
-                    (remaining.length === 0 || totalCount === 0) &&
-                      styles.ctaTextDisabled,
-                  ]}
-                >
-                  {totalCount === 0
-                    ? "Pick tasks first"
-                    : remaining.length === 0
-                      ? "All done today"
-                      : "Mark task done"}
-                </Text>
-                {remaining.length > 0 && totalCount > 0 ? (
-                  <Ionicons
-                    name="arrow-forward"
-                    size={18}
-                    color={Colors.brand.greenText}
-                  />
-                ) : null}
+                {activity.slice(0, 4).map((a) => (
+                  <View key={a.id} style={styles.chatBubble}>
+                    <Text style={styles.chatLine} numberOfLines={2}>
+                      <Text style={styles.chatName}>{a.name}</Text>
+                      {" finished "}
+                      <Text style={styles.chatTask}>{a.taskTitle}</Text>
+                    </Text>
+                    <Text style={styles.chatTime}>{relativeTime(a.at)}</Text>
+                  </View>
+                ))}
+                {activity.length > 4 && (
+                  <Text style={styles.chatMore}>
+                    +{activity.length - 4} more — tap to view
+                  </Text>
+                )}
               </Pressable>
-            </View>
+            )}
           </View>
 
           <View style={styles.section}>
@@ -620,25 +569,47 @@ export default function CircleHome() {
               </View>
             ) : (
               <View style={styles.taskList}>
-                {visibleTasks.map((t) => (
-                  <View key={t.key} style={styles.taskRow}>
-                    <Text
-                      style={[styles.taskTitle, t.done && styles.taskTitleDone]}
-                      numberOfLines={1}
+                {visibleTasks.map((t) => {
+                  const isSelected = selected.has(t.key);
+                  return (
+                    <Pressable
+                      key={t.key}
+                      onPress={() => toggleSelect(t.key, t.done)}
+                      disabled={t.done}
+                      style={({ pressed }) => [
+                        styles.taskRow,
+                        pressed && !t.done && styles.taskRowPressed,
+                      ]}
                     >
-                      {t.title}
-                    </Text>
-                    {t.done ? (
-                      <Ionicons
-                        name="checkmark-circle"
-                        size={22}
-                        color={Colors.brand.greenBright}
-                      />
-                    ) : (
-                      <View style={styles.taskDot} />
-                    )}
-                  </View>
-                ))}
+                      <Text
+                        style={[
+                          styles.taskTitle,
+                          t.done && styles.taskTitleDone,
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {t.title}
+                      </Text>
+                      {t.done ? (
+                        <Ionicons
+                          name="checkmark-circle"
+                          size={22}
+                          color={Colors.brand.greenBright}
+                        />
+                      ) : isSelected ? (
+                        <View style={styles.taskCheckSelected}>
+                          <Ionicons
+                            name="checkmark"
+                            size={14}
+                            color={Colors.bg.base}
+                          />
+                        </View>
+                      ) : (
+                        <View style={styles.taskCheck} />
+                      )}
+                    </Pressable>
+                  );
+                })}
                 {tasks.length > 5 ? (
                   <Pressable
                     onPress={() => setShowAllTasks((v) => !v)}
@@ -663,24 +634,139 @@ export default function CircleHome() {
           </View>
         </ScrollView>
 
+        {selectedCount > 0 ? (
+          <View style={styles.actionBar}>
+            <Pressable
+              onPress={completeSelected}
+              disabled={completing}
+              style={({ pressed }) => [
+                styles.actionCta,
+                pressed && !completing && styles.actionCtaPressed,
+                completing && styles.actionCtaDisabled,
+              ]}
+            >
+              {completing ? (
+                <ActivityIndicator
+                  color={Colors.brand.greenText}
+                  size="small"
+                />
+              ) : (
+                <>
+                  <Text style={styles.actionCtaText}>
+                    Mark {selectedCount}{" "}
+                    {selectedCount === 1 ? "task" : "tasks"} done
+                  </Text>
+                  <Ionicons
+                    name="arrow-forward"
+                    size={18}
+                    color={Colors.brand.greenText}
+                  />
+                </>
+              )}
+            </Pressable>
+          </View>
+        ) : null}
+
         <TabBar active="circles" />
       </Animated.View>
 
-      <TaskCompleteSheet
-        visible={sheetVisible}
-        tasks={remaining.map((r) => ({ key: r.key, title: r.title }))}
-        loading={loading}
-        completing={completing}
-        onClose={() => {
-          if (!completing) setSheetVisible(false);
-        }}
-        onComplete={completeTask}
-      />
+      <Modal
+        visible={expandedSlide !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setExpandedSlide(null)}
+      >
+        <Pressable
+          style={styles.modalBackdrop}
+          onPress={() => setExpandedSlide(null)}
+        >
+          <Pressable
+            style={styles.modalCard}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Text style={styles.modalTitle}>
+              {expandedSlide === 0
+                ? "Full leaderboard"
+                : expandedSlide === 1
+                  ? "Points by member"
+                  : expandedSlide === 2
+                    ? "Daily progress"
+                    : "Your week"}
+            </Text>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {expandedSlide === 0 &&
+                leaderboard.map((row, idx) => (
+                  <View key={row.userId} style={styles.activityRow}>
+                    <Text style={styles.activityText}>
+                      <Text style={styles.activityName}>
+                        {idx + 1}. {row.name}
+                      </Text>
+                      {"  "}
+                      <Text style={styles.activityTask}>{row.points} pts</Text>
+                    </Text>
+                  </View>
+                ))}
+              {expandedSlide !== 0 && (
+                <LeaderboardWidget
+                  leaderboard={leaderboard}
+                  maxWeeklyPoints={maxWeeklyPoints}
+                  myPoints={myWeekPoints}
+                  myUserId={myUserId}
+                  weeklyByUserDay={weeklyByUserDay}
+                  loading={false}
+                  empty={false}
+                />
+              )}
+            </ScrollView>
+            <Pressable
+              style={styles.modalClose}
+              onPress={() => setExpandedSlide(null)}
+            >
+              <Text style={styles.modalCloseText}>Close</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={activityOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setActivityOpen(false)}
+      >
+        <Pressable
+          style={styles.modalBackdrop}
+          onPress={() => setActivityOpen(false)}
+        >
+          <Pressable
+            style={styles.modalCard}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Text style={styles.modalTitle}>Today's activity</Text>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {activity.map((a) => (
+                <View key={a.id} style={styles.chatBubble}>
+                  <Text style={styles.chatLine}>
+                    <Text style={styles.chatName}>{a.name}</Text>
+                    {" finished "}
+                    <Text style={styles.chatTask}>{a.taskTitle}</Text>
+                  </Text>
+                  <Text style={styles.chatTime}>{relativeTime(a.at)}</Text>
+                </View>
+              ))}
+            </ScrollView>
+            <Pressable
+              style={styles.modalClose}
+              onPress={() => setActivityOpen(false)}
+            >
+              <Text style={styles.modalCloseText}>Close</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
-
-const CTA_HEIGHT = 48;
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: Colors.bg.base },
@@ -691,6 +777,9 @@ const styles = StyleSheet.create({
     paddingTop: Spacing.screenTop,
     paddingBottom: 32,
     gap: Spacing.sectionGap,
+  },
+  scrollContentWithBar: {
+    paddingBottom: 120,
   },
 
   header: {
@@ -708,17 +797,13 @@ const styles = StyleSheet.create({
     letterSpacing: -0.4,
   },
 
-  section: {
-    gap: 14,
-  },
+  section: { gap: 14 },
   sectionHead: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "baseline",
   },
-  sectionTitle: {
-    ...Typography.section,
-  },
+  sectionTitle: { ...Typography.section },
   sectionMeta: {
     ...Typography.overline,
     textTransform: "uppercase",
@@ -726,142 +811,93 @@ const styles = StyleSheet.create({
     color: Colors.text.primary,
   },
 
-  board: {
-    backgroundColor: Colors.bg.card,
-    padding: 20,
-    borderRadius: Radius.card,
-    gap: 14,
-  },
-  boardRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 14,
-  },
-  medal: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  medalText: {
-    ...Typography.section,
-    fontSize: 14,
-    color: Colors.text.primary,
-    fontWeight: "700",
-  },
-  medalTextTop: {
-    color: Colors.bg.base,
-  },
-  boardBody: {
-    flex: 1,
-    gap: 6,
-  },
-  boardTop: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "baseline",
-    gap: 10,
-  },
-  boardName: {
-    ...Typography.body,
-    fontWeight: "600",
-    flex: 1,
-  },
-  boardPts: {
-    ...Typography.label,
-  },
-  barTrack: {
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: Colors.progressTrack,
-    overflow: "hidden",
-  },
-  barFill: {
-    height: "100%",
-    borderRadius: 2,
-    overflow: "hidden",
-  },
-
-  todayCard: {
+  activityCard: {
     backgroundColor: Colors.bg.card,
     borderRadius: Radius.card,
-    padding: 20,
+    paddingHorizontal: 18,
+    paddingVertical: 6,
+  },
+  activityRow: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: 18,
+    alignItems: "flex-start",
+    gap: 12,
+    paddingVertical: 12,
   },
-  ringWrap: {
-    width: RING_SIZE,
-    height: RING_SIZE,
-    alignItems: "center",
-    justifyContent: "center",
+  activityRowDivider: {
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
   },
-  ringLabel: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: "center",
-    justifyContent: "center",
+  activityDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: Colors.brand.greenBright,
+    marginTop: 7,
   },
-  ringNumber: {
-    ...Typography.display,
-    fontSize: 28,
-    letterSpacing: -0.6,
-    lineHeight: 32,
-  },
-  ringDenom: {
-    ...Typography.label,
-    fontSize: 16,
-    color: Colors.text.secondary,
-  },
-  todayBody: {
-    flex: 1,
+  activityBody: { flex: 1, gap: 2 },
+  activityText: { ...Typography.body, fontSize: 15, lineHeight: 20 },
+  activityName: { fontWeight: "600" },
+  activityTask: { color: Colors.text.secondary },
+  activityTime: { ...Typography.caption },
+  chatCard: {
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.card,
+    padding: Spacing.cardPadding,
     gap: 8,
   },
-  todayOverline: {
-    ...Typography.overline,
-    textTransform: "uppercase",
-    letterSpacing: 1.2,
-  },
-  todayHeadline: {
-    ...Typography.title,
-    fontSize: 22,
-    letterSpacing: -0.4,
-  },
-  cta: {
-    marginTop: 4,
-    height: CTA_HEIGHT,
-    backgroundColor: Colors.brand.green,
-    borderRadius: Radius.pill,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    paddingHorizontal: 16,
-  },
-  ctaPressed: {
-    opacity: 0.8,
-  },
-  ctaDisabled: {
+  chatBubble: {
     backgroundColor: Colors.bg.cardActive,
+    borderRadius: 14,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    alignSelf: "flex-start",
+    maxWidth: "92%",
   },
-  ctaText: {
+  chatLine: { ...Typography.body, fontSize: 14, lineHeight: 19 },
+  chatName: { fontWeight: "700" },
+  chatTask: { color: Colors.text.secondary },
+  chatTime: { ...Typography.caption, marginTop: 2 },
+  chatMore: { ...Typography.caption, textAlign: "center", marginTop: 4 },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.85)",
+    justifyContent: "center",
+    paddingHorizontal: Spacing.screenHorizontal,
+  },
+  modalCard: {
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.card,
+    padding: Spacing.cardPadding,
+    maxHeight: "85%",
+  },
+  modalTitle: {
+    ...Typography.section,
+    color: Colors.text.primary,
+    marginBottom: 12,
+  },
+  modalClose: {
+    alignSelf: "flex-end",
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    marginTop: 12,
+  },
+  modalCloseText: {
     ...Typography.body,
-    fontSize: 15,
-    color: Colors.brand.greenText,
+    color: Colors.text.primary,
     fontWeight: "600",
   },
-  ctaTextDisabled: {
-    color: Colors.text.secondary,
-  },
 
-  taskList: {
-    gap: 2,
-  },
+  taskList: { gap: 2 },
   taskRow: {
     paddingVertical: 14,
+    paddingHorizontal: 4,
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
+    borderRadius: Radius.cardSm,
+  },
+  taskRowPressed: {
+    backgroundColor: Colors.bg.cardActive,
   },
   taskTitle: {
     ...Typography.body,
@@ -870,12 +906,20 @@ const styles = StyleSheet.create({
   taskTitleDone: {
     color: Colors.text.secondary,
   },
-  taskDot: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
+  taskCheck: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     borderWidth: 1.5,
     borderColor: Colors.border,
+  },
+  taskCheckSelected: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: Colors.brand.greenBright,
+    alignItems: "center",
+    justifyContent: "center",
   },
   showMore: {
     marginTop: 4,
@@ -884,12 +928,33 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 4,
     paddingVertical: 10,
+    paddingHorizontal: 4,
   },
-  showMorePressed: {
-    opacity: 0.6,
+  showMorePressed: { opacity: 0.6 },
+  showMoreText: { ...Typography.label, fontWeight: "600" },
+
+  actionBar: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 88,
+    paddingHorizontal: Spacing.screenHorizontal,
   },
-  showMoreText: {
-    ...Typography.label,
+  actionCta: {
+    height: 54,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.brand.green,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    paddingHorizontal: 20,
+  },
+  actionCtaPressed: { opacity: 0.85 },
+  actionCtaDisabled: { opacity: 0.6 },
+  actionCtaText: {
+    ...Typography.body,
+    color: Colors.brand.greenText,
     fontWeight: "600",
   },
 
@@ -898,20 +963,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 6,
   },
-  emptyInline: {
-    paddingVertical: 8,
-    alignItems: "center",
-    gap: 4,
-  },
-  emptyTitle: {
-    ...Typography.body,
-    fontWeight: "600",
-  },
-  emptyHelper: {
-    ...Typography.label,
-    textAlign: "center",
-  },
-  emptyText: {
-    ...Typography.label,
-  },
+  emptyTitle: { ...Typography.body, fontWeight: "600" },
+  emptyHelper: { ...Typography.label, textAlign: "center" },
+  emptyText: { ...Typography.label },
 });

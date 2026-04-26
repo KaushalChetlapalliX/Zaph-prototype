@@ -7,6 +7,8 @@ import {
   ScrollView,
   Animated,
   Easing,
+  ActivityIndicator,
+  Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -68,6 +70,61 @@ export default function UserHome() {
   const [weeklyPoints, setWeeklyPoints] = useState<number>(0);
   const [circleCount, setCircleCount] = useState<number>(0);
   const [showAllTasks, setShowAllTasks] = useState<boolean>(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [completing, setCompleting] = useState(false);
+
+  const toggleSelect = (key: string, done: boolean) => {
+    if (done) return;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const completeSelected = async () => {
+    if (completing || selected.size === 0) return;
+    setCompleting(true);
+    try {
+      const { data: userData } = await supabase.auth.getUser();
+      const uid = userData.user?.id;
+      if (!uid) {
+        Alert.alert("Not logged in", "Please log in again.");
+        return;
+      }
+
+      const keys = Array.from(selected);
+      const targets = todayTasks.filter((t) => keys.includes(t.key));
+      const rows = targets.map((t) => {
+        const taskId = t.key.includes(":")
+          ? t.key.slice(t.key.indexOf(":") + 1)
+          : t.key;
+        return {
+          circle_id: t.circleId,
+          user_id: uid,
+          task_id: taskId,
+          completed_at: new Date().toISOString(),
+          points: POINTS_PER_TASK,
+        };
+      });
+
+      const { error } = await supabase.from("task_completions").insert(rows);
+      const insertErr = error as { code?: string; message?: string } | null;
+      if (insertErr && insertErr.code !== "23505") {
+        Alert.alert("Error", insertErr.message ?? "Could not save.");
+        return;
+      }
+
+      setTodayTasks((prev) =>
+        prev.map((t) => (selected.has(t.key) ? { ...t, done: true } : t)),
+      );
+      setWeeklyPoints((p) => p + targets.length * POINTS_PER_TASK);
+      setSelected(new Set());
+    } finally {
+      setCompleting(false);
+    }
+  };
 
   const inFlightRef = useRef(false);
   const mountAnim = useRef(new Animated.Value(0)).current;
@@ -301,9 +358,11 @@ export default function UserHome() {
     };
 
     fetchDashboard();
+    const interval = setInterval(fetchDashboard, 3000);
 
     return () => {
       alive = false;
+      clearInterval(interval);
     };
   }, []);
 
@@ -433,33 +492,52 @@ export default function UserHome() {
               </View>
             ) : (
               <View style={styles.taskList}>
-                {visibleTasks.map((t) => (
-                  <View key={t.key} style={styles.taskRow}>
-                    <View style={styles.taskTextCol}>
-                      <Text
-                        style={[
-                          styles.taskTitle,
-                          t.done && styles.taskTitleDone,
-                        ]}
-                        numberOfLines={1}
-                      >
-                        {t.title}
-                      </Text>
-                      <Text style={styles.taskCircle} numberOfLines={1}>
-                        {t.circleName}
-                      </Text>
-                    </View>
-                    {t.done ? (
-                      <Ionicons
-                        name="checkmark-circle"
-                        size={22}
-                        color={Colors.brand.greenBright}
-                      />
-                    ) : (
-                      <View style={styles.taskPending} />
-                    )}
-                  </View>
-                ))}
+                {visibleTasks.map((t) => {
+                  const isSelected = selected.has(t.key);
+                  return (
+                    <Pressable
+                      key={t.key}
+                      onPress={() => toggleSelect(t.key, t.done)}
+                      disabled={t.done}
+                      style={({ pressed }) => [
+                        styles.taskRow,
+                        pressed && !t.done && styles.taskRowPressed,
+                      ]}
+                    >
+                      <View style={styles.taskTextCol}>
+                        <Text
+                          style={[
+                            styles.taskTitle,
+                            t.done && styles.taskTitleDone,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {t.title}
+                        </Text>
+                        <Text style={styles.taskCircle} numberOfLines={1}>
+                          {t.circleName}
+                        </Text>
+                      </View>
+                      {t.done ? (
+                        <Ionicons
+                          name="checkmark-circle"
+                          size={22}
+                          color={Colors.brand.greenBright}
+                        />
+                      ) : isSelected ? (
+                        <View style={styles.taskCheckSelected}>
+                          <Ionicons
+                            name="checkmark"
+                            size={14}
+                            color={Colors.bg.base}
+                          />
+                        </View>
+                      ) : (
+                        <View style={styles.taskPending} />
+                      )}
+                    </Pressable>
+                  );
+                })}
                 {todayTasks.length > 5 ? (
                   <Pressable
                     onPress={() => setShowAllTasks((v) => !v)}
@@ -483,6 +561,39 @@ export default function UserHome() {
             )}
           </View>
         </ScrollView>
+
+        {selected.size > 0 ? (
+          <View style={styles.actionBar}>
+            <Pressable
+              onPress={completeSelected}
+              disabled={completing}
+              style={({ pressed }) => [
+                styles.actionCta,
+                pressed && !completing && styles.actionCtaPressed,
+                completing && styles.actionCtaDisabled,
+              ]}
+            >
+              {completing ? (
+                <ActivityIndicator
+                  color={Colors.brand.greenText}
+                  size="small"
+                />
+              ) : (
+                <>
+                  <Text style={styles.actionCtaText}>
+                    Mark {selected.size}{" "}
+                    {selected.size === 1 ? "task" : "tasks"} done
+                  </Text>
+                  <Ionicons
+                    name="arrow-forward"
+                    size={18}
+                    color={Colors.brand.greenText}
+                  />
+                </>
+              )}
+            </Pressable>
+          </View>
+        ) : null}
 
         <TabBar active="home" />
       </Animated.View>
@@ -613,9 +724,46 @@ const styles = StyleSheet.create({
   },
   taskRow: {
     paddingVertical: 14,
+    paddingHorizontal: 4,
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
+    borderRadius: Radius.cardSm,
+  },
+  taskRowPressed: {
+    backgroundColor: Colors.bg.cardActive,
+  },
+  taskCheckSelected: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: Colors.brand.greenBright,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  actionBar: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 88,
+    paddingHorizontal: Spacing.screenHorizontal,
+  },
+  actionCta: {
+    height: 54,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.brand.green,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    paddingHorizontal: 20,
+  },
+  actionCtaPressed: { opacity: 0.85 },
+  actionCtaDisabled: { opacity: 0.6 },
+  actionCtaText: {
+    ...Typography.body,
+    color: Colors.brand.greenText,
+    fontWeight: "600",
   },
   taskTextCol: {
     flex: 1,
