@@ -53,9 +53,7 @@ export function CircleCodeSheet({
         .toString()
         .padStart(4, "0");
 
-      setVisible(false);
-
-      router.push({
+      router.replace({
         pathname: "/onboarding",
         params: { code: randomCode, name },
       });
@@ -112,9 +110,7 @@ export function CircleCodeSheet({
         }
       } catch {}
 
-      setVisible(false);
-
-      router.push({
+      router.replace({
         pathname: "/circle-members",
         params: {
           circleId: String(circleId),
@@ -150,7 +146,7 @@ export function CircleCodeSheet({
     <Modal
       visible={visible}
       transparent
-      animationType="slide"
+      animationType="fade"
       onRequestClose={handleClose}
     >
       <View style={styles.backdrop}>

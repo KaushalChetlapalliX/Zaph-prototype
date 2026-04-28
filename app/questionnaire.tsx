@@ -509,9 +509,9 @@ const styles = StyleSheet.create({
   },
   progressFill: {
     height: PROGRESS_HEIGHT,
-    backgroundColor: Colors.text.primary,
+    backgroundColor: Colors.brand.greenBright,
     borderRadius: PROGRESS_HEIGHT / 2,
-    shadowColor: Colors.text.primary,
+    shadowColor: Colors.brand.greenBright,
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.6,
     shadowRadius: 6,
