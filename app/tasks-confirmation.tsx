@@ -16,6 +16,7 @@ import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "../src/lib/supabase";
 import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
+import { assignCircleCategoriesFromQuestionnaire } from "../src/lib/circle-flow";
 
 type Difficulty = "easy" | "medium" | "hard";
 
@@ -323,22 +324,23 @@ export default function TasksConfirmationScreen() {
 
     setAssigning(true);
 
-    const { error: rpcErr } = await supabase.rpc("compute_circle_assignments", {
-      p_circle_id: circleId,
-    });
-
-    if (rpcErr) {
-      console.error(
-        "[tasks-confirmation] compute_circle_assignments:",
-        rpcErr.message,
-      );
+    try {
+      const nextDailyTaskCount =
+        await assignCircleCategoriesFromQuestionnaire(circleId);
+      setDailyTaskCount(nextDailyTaskCount);
+      setAssigned(true);
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Could not assign categories.";
+      console.error("[tasks-confirmation] assign categories:", message);
       setAssigning(false);
-      Alert.alert("Could not assign categories", rpcErr.message);
+      Alert.alert("Could not assign categories", message);
       return;
     }
 
     setAssigning(false);
-    setAssigned(true);
   };
 
   const handleStart = async () => {

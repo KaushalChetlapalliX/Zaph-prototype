@@ -14,21 +14,14 @@ import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "../src/lib/supabase";
-import {
-  Colors,
-  Radius,
-  Spacing,
-  Typography,
-} from "../src/constants/design";
+import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
 import { TabBar } from "../src/components/TabBar";
-
-type Difficulty = "easy" | "medium" | "hard";
+import { syncCircleSelectionsForCurrentUser } from "../src/lib/circle-flow";
 
 type CircleRow = {
   id: string;
   name: string | null;
   code: string | number | null;
-  difficulty: Difficulty | null;
   stage: string | null;
 };
 
@@ -38,18 +31,6 @@ type MemberJoinRow = {
 };
 
 const POLL_MS = 2000;
-
-const DIFFICULTY_COPY: Record<Difficulty, string> = {
-  easy: "Easy",
-  medium: "Medium",
-  hard: "Hard",
-};
-
-const DIFFICULTY_COLOR: Record<Difficulty, string> = {
-  easy: Colors.brand.greenBright,
-  medium: Colors.accent.gold,
-  hard: Colors.accent.pink,
-};
 
 export default function CreateCircle() {
   const [loading, setLoading] = useState(true);
@@ -74,8 +55,8 @@ export default function CreateCircle() {
       .map(
         (c) =>
           `${c.id}|${(c.name ?? "").trim()}|${String(c.code ?? "")}|${
-            c.difficulty ?? ""
-          }|${c.stage ?? ""}`
+            c.stage ?? ""
+          }`
       )
       .join(",");
 
@@ -103,7 +84,7 @@ export default function CreateCircle() {
 
       const { data, error } = await supabase
         .from("circle_members")
-        .select("circle_id, circles ( id, name, code, difficulty, stage )")
+        .select("circle_id, circles ( id, name, code, stage )")
         .eq("user_id", uid);
 
       if (!alive) return;
@@ -163,25 +144,31 @@ export default function CreateCircle() {
   const openCircle = async (c: CircleRow) => {
     const circleId = c.id;
     const circleCode = String(c.code ?? "");
-    const level = (c.difficulty ?? "easy") as Difficulty;
     const stage = String(c.stage ?? "lobby");
 
     try {
       await AsyncStorage.setItem("activeCircleId", circleId);
       await AsyncStorage.setItem("activeCircleCode", circleCode);
-      await AsyncStorage.setItem("activeDifficulty", level);
       await AsyncStorage.setItem("activeCircleName", String(c.name ?? ""));
     } catch {}
 
-    if (stage === "selecting") {
-      router.push({
-        pathname: "/select-tasks",
-        params: { level, circleId, circleCode },
-      });
+    try {
+      await syncCircleSelectionsForCurrentUser(circleId);
+    } catch {
+      // If selections are already in place we still want the circle to open.
+    }
+
+    if (stage === "active") {
+      router.push({ pathname: "/circle-home", params: { circleId } });
       return;
     }
 
-    if (stage === "confirmation" || stage === "finalized" || stage === "ready") {
+    if (
+      stage === "selecting" ||
+      stage === "confirmation" ||
+      stage === "finalized" ||
+      stage === "ready"
+    ) {
       router.push({ pathname: "/tasks-confirmation", params: { circleId } });
       return;
     }
@@ -191,7 +178,6 @@ export default function CreateCircle() {
       params: {
         circleId,
         circleCode,
-        level,
         circleName: String(c.name ?? ""),
       },
     });
@@ -272,14 +258,13 @@ export default function CreateCircle() {
           list.map((c) => {
             const name = (c.name ?? "").trim();
             const code = String(c.code ?? "");
+            const stage = String(c.stage ?? "lobby");
             const title =
               name.length > 0
                 ? name
                 : code.length > 0
                   ? `Circle ${code}`
                   : "Circle";
-            const d: Difficulty = (c.difficulty ?? "easy") as Difficulty;
-
             return (
               <Pressable
                 key={c.id}
@@ -294,21 +279,19 @@ export default function CreateCircle() {
                     {title}
                   </Text>
                   <View style={styles.rowMeta}>
-                    <View
-                      style={[
-                        styles.difficultyDot,
-                        { backgroundColor: DIFFICULTY_COLOR[d] },
-                      ]}
-                    />
-                    <Text style={styles.rowMetaText}>
-                      {DIFFICULTY_COPY[d]}
-                    </Text>
                     {code.length > 0 ? (
                       <>
-                        <Text style={styles.dotSep}>·</Text>
                         <Text style={styles.rowMetaText}>Code {code}</Text>
                       </>
                     ) : null}
+                    <Text style={styles.dotSep}>·</Text>
+                    <Text style={styles.rowMetaText}>
+                      {stage === "active"
+                        ? "Week live"
+                        : stage === "selecting"
+                          ? "Lineup"
+                          : "Lobby"}
+                    </Text>
                   </View>
                 </View>
                 <Ionicons
@@ -428,11 +411,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-  },
-  difficultyDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
   },
   rowMetaText: {
     ...Typography.label,
