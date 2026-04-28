@@ -6,6 +6,35 @@ import * as QueryParams from "expo-auth-session/build/QueryParams";
 import { supabase } from "../../src/lib/supabase";
 import { Colors, Spacing, Typography } from "../../src/constants/design";
 
+function readAuthParams(rawUrl: string): Record<string, string> {
+  const parsed: Record<string, string> = {};
+
+  const assignFromPart = (part: string | undefined) => {
+    if (!part) return;
+    const search = new URLSearchParams(part);
+    for (const [key, value] of search.entries()) {
+      parsed[key] = value;
+    }
+  };
+
+  const queryIndex = rawUrl.indexOf("?");
+  const hashIndex = rawUrl.indexOf("#");
+
+  if (queryIndex >= 0) {
+    const queryPart =
+      hashIndex > queryIndex
+        ? rawUrl.slice(queryIndex + 1, hashIndex)
+        : rawUrl.slice(queryIndex + 1);
+    assignFromPart(queryPart);
+  }
+
+  if (hashIndex >= 0) {
+    assignFromPart(rawUrl.slice(hashIndex + 1));
+  }
+
+  return parsed;
+}
+
 export default function AuthCallback() {
   useEffect(() => {
     const run = async () => {
@@ -13,6 +42,10 @@ export default function AuthCallback() {
       if (!initialUrl) return;
 
       const { params, errorCode } = QueryParams.getQueryParams(initialUrl);
+      const mergedParams = {
+        ...readAuthParams(initialUrl),
+        ...(params as Record<string, string | undefined> | undefined),
+      };
 
       if (errorCode) {
         alert(errorCode);
@@ -20,9 +53,9 @@ export default function AuthCallback() {
         return;
       }
 
-      const access_token = (params?.access_token as string) ?? "";
-      const refresh_token = (params?.refresh_token as string) ?? "";
-      const code = (params?.code as string) ?? "";
+      const access_token = mergedParams.access_token ?? "";
+      const refresh_token = mergedParams.refresh_token ?? "";
+      const code = mergedParams.code ?? "";
 
       if (code) {
         const { data: exchangeData, error: exchangeError } =
