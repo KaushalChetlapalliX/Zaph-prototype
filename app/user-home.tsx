@@ -18,6 +18,7 @@ import { supabase } from "../src/lib/supabase";
 import { TabBar } from "../src/components/TabBar";
 import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
 import { STORAGE_KEYS } from "../src/constants/storage";
+import { taskCountForAssignedCategory } from "../src/lib/circle-flow";
 import type { SuggestedCategory } from "../src/types/questionnaire";
 
 const DEFAULT_DAILY_TASK_COUNT = 6;
@@ -300,13 +301,17 @@ export default function UserHome() {
         // out to all 5 of its category_subtasks for the week.
         const { data: selRows } = await supabase
           .from("circle_member_category_selections")
-          .select("circle_id, category_id")
+          .select("circle_id, category_id, is_common")
           .eq("user_id", uid)
           .in("circle_id", circleIds);
 
         if (!alive) return;
 
-        type SelRow = { circle_id: string; category_id: string };
+        type SelRow = {
+          circle_id: string;
+          category_id: string;
+          is_common?: boolean | null;
+        };
         const selList = (selRows ?? []) as unknown as SelRow[];
 
         const categoryIds = Array.from(
@@ -372,13 +377,6 @@ export default function UserHome() {
           subtasksByCategory[k].push(st);
         }
 
-        // Count categories per circle to derive per-category slice sizes.
-        const catCountByCircle: Record<string, number> = {};
-        for (const sel of selList) {
-          const cId = String(sel.circle_id);
-          catCountByCircle[cId] = (catCountByCircle[cId] ?? 0) + 1;
-        }
-
         const nextTasks: TodayTaskItem[] = [];
         for (const sel of selList) {
           const circleId = String(sel.circle_id);
@@ -389,8 +387,10 @@ export default function UserHome() {
 
           const dailyCount =
             dailyTaskCountByCircle[circleId] ?? DEFAULT_DAILY_TASK_COUNT;
-          const catCount = Math.max(1, catCountByCircle[circleId] ?? 1);
-          const perCategory = Math.max(1, Math.floor(dailyCount / catCount));
+          const perCategory = taskCountForAssignedCategory(
+            dailyCount,
+            sel.is_common === true,
+          );
 
           const preferred = preferredTitlesByCat[categoryId];
           const sorted = preferred

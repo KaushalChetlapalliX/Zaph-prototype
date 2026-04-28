@@ -16,6 +16,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "../src/lib/supabase";
 import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
+import { syncCircleSelectionsForCurrentUser } from "../src/lib/circle-flow";
 
 type MemberRow = {
   user_id: string;
@@ -24,11 +25,8 @@ type MemberRow = {
   joined_at?: string | null;
 };
 
-type Difficulty = "easy" | "medium" | "hard";
-
 type CirclePayload = {
   code?: string | number | null;
-  difficulty?: Difficulty | null;
   stage?: string | null;
 };
 
@@ -50,7 +48,6 @@ export default function CircleMembersScreen() {
   const [members, setMembers] = useState<MemberRow[]>([]);
 
   const [circleCode, setCircleCode] = useState<string>("");
-  const [difficulty, setDifficulty] = useState<Difficulty>("easy");
   const [stage, setStage] = useState<string>("lobby");
 
   const [isAdmin, setIsAdmin] = useState(false);
@@ -89,24 +86,12 @@ export default function CircleMembersScreen() {
     init();
   }, [circleIdParam]);
 
-  const maybeNavigateToSelect = (
-    nextStage: string,
-    nextDifficulty: Difficulty,
-    nextCode: string,
-  ) => {
+  const maybeNavigateToSelect = (nextStage: string) => {
     if (navigatedRef.current) return;
     if (nextStage !== "selecting") return;
 
     navigatedRef.current = true;
-
-    router.replace({
-      pathname: "/select-categories",
-      params: {
-        level: nextDifficulty,
-        circleId: circleId ?? "",
-        circleCode: nextCode ?? "",
-      },
-    });
+    router.replace({ pathname: "/tasks-confirmation", params: { circleId } });
   };
 
   useEffect(() => {
@@ -114,24 +99,19 @@ export default function CircleMembersScreen() {
 
     let alive = true;
 
-    const applyCircleIfChanged = (
-      nextCode: string,
-      nextDifficulty: Difficulty,
-      nextStage: string,
-    ) => {
-      const sig = `${nextCode}|${nextDifficulty}|${nextStage}`;
+    const applyCircleIfChanged = (nextCode: string, nextStage: string) => {
+      const sig = `${nextCode}|${nextStage}`;
       if (sig === circleSigRef.current) return;
 
       circleSigRef.current = sig;
       setCircleCode(nextCode);
-      setDifficulty(nextDifficulty);
       setStage(nextStage);
     };
 
     const loadCircle = async () => {
       const { data, error } = await supabase
         .from("circles")
-        .select("code, difficulty, stage")
+        .select("code, stage")
         .eq("id", circleId)
         .single();
 
@@ -140,12 +120,10 @@ export default function CircleMembersScreen() {
 
       const typed = data as unknown as CirclePayload;
       const nextCode = String(typed.code ?? "");
-      const nextDifficulty: Difficulty = (typed.difficulty ??
-        "easy") as Difficulty;
       const nextStage = String(typed.stage ?? "lobby");
 
-      applyCircleIfChanged(nextCode, nextDifficulty, nextStage);
-      maybeNavigateToSelect(nextStage, nextDifficulty, nextCode);
+      applyCircleIfChanged(nextCode, nextStage);
+      maybeNavigateToSelect(nextStage);
     };
 
     loadCircle();
@@ -163,20 +141,10 @@ export default function CircleMembersScreen() {
         (payload) => {
           const newRow = (payload.new ?? {}) as CirclePayload;
           const nextStage = String(newRow.stage ?? "lobby");
-          const nextDifficulty: Difficulty = (newRow.difficulty ??
-            "easy") as Difficulty;
           const nextCode = String(newRow.code ?? "");
 
-          applyCircleIfChanged(
-            nextCode || circleCode,
-            nextDifficulty,
-            nextStage,
-          );
-          maybeNavigateToSelect(
-            nextStage,
-            nextDifficulty,
-            nextCode || circleCode,
-          );
+          applyCircleIfChanged(nextCode || circleCode, nextStage);
+          maybeNavigateToSelect(nextStage);
         },
       )
       .subscribe();
@@ -189,6 +157,14 @@ export default function CircleMembersScreen() {
       supabase.removeChannel(channel);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [circleId, circleCode]);
+
+  useEffect(() => {
+    if (!circleId) return;
+
+    void syncCircleSelectionsForCurrentUser(circleId).catch(() => {
+      // Existing members may already be synced for this circle.
+    });
   }, [circleId]);
 
   useEffect(() => {
@@ -296,7 +272,7 @@ export default function CircleMembersScreen() {
 
     if (error) {
       setStarting(false);
-      Alert.alert("Select tasks failed", error.message);
+      Alert.alert("Open lineup failed", error.message);
       return;
     }
 
@@ -304,12 +280,8 @@ export default function CircleMembersScreen() {
     setStarting(false);
 
     router.replace({
-      pathname: "/select-categories",
-      params: {
-        level: difficulty,
-        circleId,
-        circleCode,
-      },
+      pathname: "/tasks-confirmation",
+      params: { circleId },
     });
   };
 
@@ -340,10 +312,10 @@ export default function CircleMembersScreen() {
         <Text style={styles.title}>Circle members.</Text>
         <Text style={styles.helper}>
           {stage === "selecting"
-            ? "Heading into task selection…"
+            ? "Opening the weekly lineup…"
             : isAdmin
-              ? "Kick things off once everyone's in."
-              : "Waiting for the admin to start."}
+              ? "Open the weekly lineup whenever your circle is ready."
+              : "Waiting for the admin to open the lineup."}
         </Text>
       </Animated.View>
 
@@ -407,7 +379,7 @@ export default function CircleMembersScreen() {
             {starting ? (
               <ActivityIndicator color={Colors.brand.greenText} size="small" />
             ) : (
-              <Text style={styles.primaryText}>Move to task selection</Text>
+              <Text style={styles.primaryText}>Review weekly lineup</Text>
             )}
           </Pressable>
         </View>

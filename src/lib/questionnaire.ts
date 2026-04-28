@@ -35,8 +35,8 @@ const Q3_SCORES: Record<string, CategoryScoreMap> = {
   strong_start_fade: { Consistency: 2 },
   unpredictable_life: { Consistency: 1 },
   distracted: { "Deep Focus": 2 },
-  no_accountability: { Consistency: 1 },
-  dont_know_where_to_start: { Consistency: 1 },
+  no_accountability: {},
+  dont_know_where_to_start: {},
 };
 
 const Q4_SCORES: Record<string, CategoryScoreMap> = {
@@ -131,43 +131,53 @@ export function getSuggestedSubtasks(
   return prefs[key] ?? prefs[motivationTier] ?? [];
 }
 
-// Client-side mirror of the DB motivation calc — used for instant UI before
-// the RPC returns. Confidence is the dominant signal; blocker/competitive
-// nudge it up or down by smaller weights.
-export function computeMotivationTierLocal(
+export function computeMotivationScoreLocal(
   confidence: number,
   blocker: string | undefined,
   competitive: string | undefined,
-): MotivationTier {
+): number {
   const conf = Math.max(1, Math.min(10, confidence));
-  let score = (conf - 1) / 9; // 0..1
+  const base = conf / 2;
 
   const blockerWeight: Record<string, number> = {
-    strong_start_fade: -0.05,
-    unpredictable_life: -0.05,
-    distracted: -0.05,
-    no_accountability: -0.05,
-    dont_know_where_to_start: -0.1,
+    strong_start_fade: -1,
+    unpredictable_life: -0.5,
+    distracted: 0,
+    no_accountability: 0,
+    dont_know_where_to_start: -1.5,
   };
   const competitiveWeight: Record<string, number> = {
-    goes_hardest: 0.1,
-    fired_up_by_others: 0.05,
-    quiet_competitor: 0.05,
-    needs_group_energy: 0,
+    goes_hardest: 1,
+    fired_up_by_others: 0.5,
+    quiet_competitor: 0,
+    needs_group_energy: -0.5,
   };
 
+  let score = base;
   if (blocker && blockerWeight[blocker] != null)
     score += blockerWeight[blocker];
   if (competitive && competitiveWeight[competitive] != null)
     score += competitiveWeight[competitive];
 
-  score = Math.max(0, Math.min(1, score));
+  return Math.max(1, Math.min(5, Number(score.toFixed(2))));
+}
 
-  // Map 0..1 → 1..5 to align with motivation_score range, then bucket.
-  const mapped = 1 + score * 4;
-  if (mapped >= 3.5) return "high";
-  if (mapped >= 2.5) return "medium";
-  return "low";
+export function computeMotivationTierFromScore(
+  motivationScore: number,
+): MotivationTier {
+  if (motivationScore <= 2.4) return "low";
+  if (motivationScore <= 3.4) return "medium";
+  return "high";
+}
+
+export function computeMotivationTierLocal(
+  confidence: number,
+  blocker: string | undefined,
+  competitive: string | undefined,
+): MotivationTier {
+  return computeMotivationTierFromScore(
+    computeMotivationScoreLocal(confidence, blocker, competitive),
+  );
 }
 
 export function tierLabel(tier: MotivationTier): string {

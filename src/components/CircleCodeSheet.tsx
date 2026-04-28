@@ -17,6 +17,9 @@ import { router } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "../lib/supabase";
 import { Colors, Radius, Spacing, Typography } from "../constants/design";
+import { syncCircleSelectionsForCurrentUser } from "../lib/circle-flow";
+
+const LEGACY_CIRCLE_DIFFICULTY = "medium";
 
 type Mode = "join" | "create";
 
@@ -53,12 +56,51 @@ export function CircleCodeSheet({
         .toString()
         .padStart(4, "0");
 
+      const { data, error } = await supabase.rpc("create_circle_with_code", {
+        desired_code: randomCode,
+        difficulty: LEGACY_CIRCLE_DIFFICULTY,
+        circle_name: name,
+      });
+
+      if (error) {
+        Alert.alert("Create failed", error.message);
+        return;
+      }
+
+      const row = Array.isArray(data) ? data[0] : data;
+      const circleRow = (row ?? {}) as Record<string, string | undefined>;
+      const circleId = String(
+        circleRow.out_circle_id ?? circleRow.circle_id ?? circleRow.id ?? "",
+      );
+      const circleCode = String(circleRow.out_code ?? circleRow.code ?? randomCode);
+
+      if (!circleId || circleId === "undefined") {
+        Alert.alert("Create failed", "Circle id was not returned.");
+        return;
+      }
+
+      await syncCircleSelectionsForCurrentUser(circleId);
+
+      try {
+        await AsyncStorage.setItem("activeCircleId", circleId);
+        await AsyncStorage.setItem("activeCircleCode", circleCode);
+        await AsyncStorage.setItem("activeCircleName", name);
+      } catch {}
+
       setVisible(false);
 
       router.push({
-        pathname: "/onboarding",
-        params: { code: randomCode, name },
+        pathname: "/circle-members",
+        params: {
+          circleCode,
+          circleId,
+          circleName: name,
+        },
       });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Could not create the circle.";
+      Alert.alert("Create failed", message);
     } finally {
       setLoading(false);
     }
@@ -87,26 +129,26 @@ export function CircleCodeSheet({
 
       const { data: circle, error: circleErr } = await supabase
         .from("circles")
-        .select("difficulty, code, name")
+        .select("code, name")
         .eq("id", circleId)
         .single();
 
-      if (circleErr || !circle?.difficulty) {
+      if (circleErr || !circle) {
         Alert.alert(
           "Joined, but couldn't load circle",
-          circleErr?.message ?? "Missing difficulty",
+          circleErr?.message ?? "Circle details were missing.",
         );
         return;
       }
 
-      const level = circle.difficulty as "easy" | "medium" | "hard";
       const circleCode = String(circle.code ?? normalized);
       const nextCircleName = String(circle.name ?? "");
+
+      await syncCircleSelectionsForCurrentUser(String(circleId));
 
       try {
         await AsyncStorage.setItem("activeCircleId", String(circleId));
         await AsyncStorage.setItem("activeCircleCode", circleCode);
-        await AsyncStorage.setItem("activeDifficulty", level);
         if (nextCircleName.trim()) {
           await AsyncStorage.setItem("activeCircleName", nextCircleName.trim());
         }
@@ -119,10 +161,13 @@ export function CircleCodeSheet({
         params: {
           circleId: String(circleId),
           circleCode,
-          level,
           circleName: nextCircleName,
         },
       });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Could not join the circle.";
+      Alert.alert("Join failed", message);
     } finally {
       setLoading(false);
     }
