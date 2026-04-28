@@ -21,7 +21,6 @@ import * as WebBrowser from "expo-web-browser";
 
 WebBrowser.maybeCompleteAuthSession();
 
-const NATIVE_GOOGLE_REDIRECT = "zaph://auth/callback";
 const WEB_GOOGLE_REDIRECT = "https://zaph.vercel.app/auth/callback";
 
 type ProfileUpsert = {
@@ -117,7 +116,24 @@ export default function CreateAccount() {
     setLoadingGoogle(true);
 
     const redirectTo =
-      Platform.OS === "web" ? WEB_GOOGLE_REDIRECT : NATIVE_GOOGLE_REDIRECT;
+      Platform.OS === "web"
+        ? WEB_GOOGLE_REDIRECT
+        : Linking.createURL("auth/callback");
+
+    if (Platform.OS === "web") {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo,
+        },
+      });
+
+      if (error) {
+        setLoadingGoogle(false);
+        Alert.alert("Google sign in failed", error.message);
+      }
+      return;
+    }
 
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider: "google",
