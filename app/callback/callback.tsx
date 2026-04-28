@@ -1,5 +1,11 @@
 import { useEffect } from "react";
-import { View, Text, StyleSheet, ActivityIndicator } from "react-native";
+import {
+  View,
+  Text,
+  StyleSheet,
+  ActivityIndicator,
+  Platform,
+} from "react-native";
 import { router } from "expo-router";
 import * as Linking from "expo-linking";
 import * as QueryParams from "expo-auth-session/build/QueryParams";
@@ -38,8 +44,15 @@ function readAuthParams(rawUrl: string): Record<string, string> {
 export default function AuthCallback() {
   useEffect(() => {
     const run = async () => {
-      const initialUrl = await Linking.getInitialURL();
-      if (!initialUrl) return;
+      const initialUrl =
+        Platform.OS === "web" && typeof window !== "undefined"
+          ? window.location.href
+          : await Linking.getInitialURL();
+      if (!initialUrl) {
+        alert("Missing OAuth redirect URL.");
+        router.replace("/create-account");
+        return;
+      }
 
       const { params, errorCode } = QueryParams.getQueryParams(initialUrl);
       const mergedParams = {
