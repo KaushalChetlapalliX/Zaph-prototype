@@ -13,12 +13,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, router } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "../src/lib/supabase";
-import {
-  Colors,
-  Radius,
-  Spacing,
-  Typography,
-} from "../src/constants/design";
+import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
 
 type Level = "easy" | "medium" | "hard";
 
@@ -31,12 +26,8 @@ type Member = {
 type MemberRow = {
   user_id: string;
   first_name?: string | null;
-  tasks_done?: boolean | string | number | null;
+  categories_selected?: boolean | string | number | null;
   joined_at?: string | null;
-};
-
-type SelectionRow = {
-  user_id?: string | null;
 };
 
 const POLL_MS = 2000;
@@ -121,7 +112,7 @@ export default function LoadingScreen() {
 
       const { data: memberRows, error } = await supabase
         .from("circle_members")
-        .select("user_id, first_name, tasks_done, joined_at")
+        .select("user_id, first_name, categories_selected, joined_at")
         .eq("circle_id", circleId)
         .order("joined_at", { ascending: true });
 
@@ -135,34 +126,21 @@ export default function LoadingScreen() {
         return;
       }
 
-      const doneSet = new Set<string>();
-      try {
-        const { data: selections, error: selErr } = await supabase
-          .from("circle_task_selections")
-          .select("user_id")
-          .eq("circle_id", circleId)
-          .eq("level", level);
-
-        if (!selErr && selections) {
-          for (const s of selections as unknown as SelectionRow[]) {
-            if (s?.user_id) doneSet.add(String(s.user_id));
-          }
-        }
-      } catch {}
-
       const typedRows = memberRows as unknown as MemberRow[];
 
       const nextMembers: Member[] = typedRows.map((m) => {
         const uid = String(m.user_id);
         const fn = (m.first_name ?? "").trim();
 
-        const tasksDoneFromColumn =
-          m.tasks_done === true || m.tasks_done === "true" || m.tasks_done === 1;
+        const ready =
+          m.categories_selected === true ||
+          m.categories_selected === "true" ||
+          m.categories_selected === 1;
 
         return {
           id: uid,
           name: fn.length > 0 ? fn : shortId(uid),
-          done: tasksDoneFromColumn || doneSet.has(uid),
+          done: ready,
         };
       });
 
@@ -225,7 +203,8 @@ export default function LoadingScreen() {
         <Text style={styles.overline}>WAITING ROOM</Text>
         <Text style={styles.title}>Hold tight.</Text>
         <Text style={styles.helper}>
-          Circle picks tasks together. Grab a coffee while everyone locks in.
+          Circle picks categories together. Grab a coffee while everyone locks
+          in.
         </Text>
       </Animated.View>
 
@@ -242,7 +221,7 @@ export default function LoadingScreen() {
             <Text style={styles.ringCount}>
               {totalCount > 0 ? `${doneCount}/${totalCount}` : "—"}
             </Text>
-            <Text style={styles.ringCaption}>picked</Text>
+            <Text style={styles.ringCaption}>ready</Text>
           </View>
         </View>
       </View>

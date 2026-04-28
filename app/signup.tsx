@@ -22,18 +22,36 @@ export default function Login() {
   const handleSignIn = async () => {
     if (loading) return;
     setLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({
+    const { data, error } = await supabase.auth.signInWithPassword({
       email: email.trim(),
       password,
     });
-    setLoading(false);
 
     if (error) {
+      setLoading(false);
       Alert.alert("Login failed", error.message);
       return;
     }
 
-    router.replace("/user-home");
+    const uid = data.user?.id;
+    if (!uid) {
+      setLoading(false);
+      router.replace("/user-home");
+      return;
+    }
+
+    const { data: profileRow } = await supabase
+      .from("profiles")
+      .select("questionnaire_completed")
+      .eq("id", uid)
+      .maybeSingle();
+
+    const completed =
+      (profileRow as { questionnaire_completed?: boolean } | null)
+        ?.questionnaire_completed === true;
+
+    setLoading(false);
+    router.replace(completed ? "/user-home" : "/questionnaire");
   };
 
   return (
@@ -83,22 +101,38 @@ export default function Login() {
           </Pressable>
 
           <Pressable
-            onPress={() => Alert.alert("Google login", "Google login is not set up right now.")}
-            style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+            onPress={() =>
+              Alert.alert(
+                "Google login",
+                "Google login is not set up right now.",
+              )
+            }
+            style={({ pressed }) => [
+              styles.secondaryButton,
+              pressed && styles.pressed,
+            ]}
           >
             <Text style={styles.secondaryButtonText}>Continue with Google</Text>
           </Pressable>
 
           <Pressable
-            onPress={() => Alert.alert("Apple login", "Apple login is not set up right now.")}
-            style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+            onPress={() =>
+              Alert.alert("Apple login", "Apple login is not set up right now.")
+            }
+            style={({ pressed }) => [
+              styles.secondaryButton,
+              pressed && styles.pressed,
+            ]}
           >
             <Text style={styles.secondaryButtonText}>Continue with Apple</Text>
           </Pressable>
         </View>
 
         <View style={styles.footer}>
-          <Pressable onPress={() => router.push("/create-account")} hitSlop={12}>
+          <Pressable
+            onPress={() => router.push("/create-account")}
+            hitSlop={12}
+          >
             <Text style={styles.footerLink}>New here? Create an account</Text>
           </Pressable>
         </View>

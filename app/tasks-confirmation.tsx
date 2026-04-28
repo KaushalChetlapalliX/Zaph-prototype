@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   Easing,
   Pressable,
@@ -14,68 +15,76 @@ import { router, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "../src/lib/supabase";
-import {
-  Colors,
-  Radius,
-  Spacing,
-  Typography,
-} from "../src/constants/design";
+import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
 
 type Difficulty = "easy" | "medium" | "hard";
 
-type CircleTaskRow = {
-  position: number;
-  task_id: string;
-};
-
-type TaskRow = {
+type CategoryMini = {
   id: string;
-  title: string;
+  name: string;
+  icon: string;
 };
 
-type MemberRoleRow = {
-  role?: string | null;
+type SelectionRow = {
+  user_id: string;
+  category_id: string;
+  is_common: boolean | null;
+  categories: CategoryMini | CategoryMini[] | null;
 };
 
-type CircleDifficultyRow = {
-  difficulty?: Difficulty | null;
+type CircleConfigRow = {
+  daily_task_count?: number | null;
+  stage?: string | null;
 };
 
-type CircleStartedRow = {
-  started_at?: string | null;
+type MemberRow = {
+  user_id: string;
+  first_name: string | null;
+  role: string | null;
+};
+
+type CircleStageRow = {
+  stage?: string | null;
+};
+
+type MemberGroup = {
+  userId: string;
+  name: string;
+  isAdmin: boolean;
+  isMe: boolean;
+  categories: (CategoryMini & { isCommon: boolean })[];
 };
 
 const POLL_MS = 2000;
-const START_POLL_MS = 1500;
+const STAGE_POLL_MS = 1500;
 
 export default function TasksConfirmationScreen() {
   const params = useLocalSearchParams<{ circleId?: string; level?: string }>();
   const circleIdParam = Array.isArray(params.circleId)
     ? params.circleId[0]
     : params.circleId;
-  const levelParamRaw = Array.isArray(params.level)
-    ? params.level[0]
-    : params.level;
-
-  const levelParam: Difficulty | null =
-    levelParamRaw === "easy" ||
-    levelParamRaw === "medium" ||
-    levelParamRaw === "hard"
-      ? levelParamRaw
-      : null;
 
   const [circleId, setCircleId] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
 
   const [loading, setLoading] = useState(true);
-  const [tasks, setTasks] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [groups, setGroups] = useState<MemberGroup[]>([]);
+  const [sharedCategoryIds, setSharedCategoryIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [adminName, setAdminName] = useState<string>("");
   const [starting, setStarting] = useState(false);
+  const [assigning, setAssigning] = useState(false);
+  const [assigned, setAssigned] = useState(false);
+  const [dailyTaskCount, setDailyTaskCount] = useState<number>(6);
 
-  const finalizedCircleRef = useRef<string | null>(null);
   const initialLoadedRef = useRef(false);
-  const tasksSigRef = useRef<string>("");
+  const groupsSigRef = useRef<string>("");
+  const navigatedRef = useRef(false);
 
   const mountAnim = useRef(new Animated.Value(0)).current;
+  const pulseAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     Animated.timing(mountAnim, {
@@ -87,129 +96,191 @@ export default function TasksConfirmationScreen() {
   }, [mountAnim]);
 
   useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, {
+          toValue: 1,
+          duration: 900,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim, {
+          toValue: 0,
+          duration: 900,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [pulseAnim]);
+
+  useEffect(() => {
     const init = async () => {
       if (circleIdParam && circleIdParam.length > 0) {
         setCircleId(circleIdParam);
         try {
           await AsyncStorage.setItem("activeCircleId", circleIdParam);
-        } catch {}
+        } catch {
+          // ignore
+        }
         return;
       }
       try {
         const stored = await AsyncStorage.getItem("activeCircleId");
         if (stored) setCircleId(stored);
-      } catch {}
+      } catch {
+        // ignore
+      }
     };
     init();
   }, [circleIdParam]);
 
-  const getLimitForDifficulty = (d: Difficulty) => {
-    if (d === "medium") return 8;
-    if (d === "hard") return 10;
-    return 6;
-  };
-
   useEffect(() => {
     if (!circleId) return;
-
     let alive = true;
 
-    const resolveAdmin = async () => {
+    const fetchGroups = async () => {
       const { data: userData } = await supabase.auth.getUser();
-      const uid = userData.user?.id;
-      if (!uid) return;
+      const uid = userData.user?.id ?? null;
 
-      const { data: row, error } = await supabase
-        .from("circle_members")
-        .select("role")
-        .eq("circle_id", circleId)
-        .eq("user_id", uid)
-        .maybeSingle();
+      const { data: selRows, error: selErr } = await supabase
+        .from("circle_member_category_selections")
+        .select(
+          "user_id, category_id, is_common, categories ( id, name, icon )",
+        )
+        .eq("circle_id", circleId);
 
       if (!alive) return;
-      if (error) {
-        setIsAdmin(false);
+
+      if (selErr) {
+        setError(selErr.message);
+        if (!initialLoadedRef.current) {
+          initialLoadedRef.current = true;
+          setLoading(false);
+        }
         return;
       }
 
-      const typed = (row ?? null) as MemberRoleRow | null;
-      setIsAdmin(typed?.role === "admin");
-    };
+      const { data: memRows, error: memErr } = await supabase
+        .from("circle_members")
+        .select("user_id, first_name, role")
+        .eq("circle_id", circleId)
+        .order("joined_at", { ascending: true });
 
-    resolveAdmin();
+      if (!alive) return;
 
-    return () => {
-      alive = false;
-    };
-  }, [circleId]);
+      if (memErr) {
+        setError(memErr.message);
+        if (!initialLoadedRef.current) {
+          initialLoadedRef.current = true;
+          setLoading(false);
+        }
+        return;
+      }
 
-  useEffect(() => {
-    if (!circleId) return;
+      const members = (memRows ?? []) as unknown as MemberRow[];
+      const selections = (selRows ?? []) as unknown as SelectionRow[];
 
-    let alive = true;
+      const { data: circleCfg } = await supabase
+        .from("circles")
+        .select("daily_task_count")
+        .eq("id", circleId)
+        .maybeSingle();
 
-    const setTasksIfChanged = (next: string[]) => {
-      const sig = next.join("\n");
-      if (sig === tasksSigRef.current) return;
-      tasksSigRef.current = sig;
-      setTasks(next);
-    };
+      if (!alive) return;
 
-    const finishInitialLoadIfNeeded = () => {
+      const cfg = (circleCfg ?? null) as CircleConfigRow | null;
+      if (cfg?.daily_task_count && typeof cfg.daily_task_count === "number") {
+        setDailyTaskCount(cfg.daily_task_count);
+      }
+
+      const memberById: Record<string, MemberRow> = {};
+      for (const m of members) memberById[m.user_id] = m;
+
+      let nextAdminName = "";
+      let nextIsAdmin = false;
+      for (const m of members) {
+        if (m.role === "admin") {
+          nextAdminName = (m.first_name ?? "").trim() || "the admin";
+          if (m.user_id === uid) nextIsAdmin = true;
+        }
+      }
+
+      const userToCategories: Record<
+        string,
+        (CategoryMini & { isCommon: boolean })[]
+      > = {};
+      const categoryUsers: Record<string, Set<string>> = {};
+      let anyAssigned = false;
+
+      for (const s of selections) {
+        const cat = Array.isArray(s.categories)
+          ? s.categories[0]
+          : s.categories;
+        if (!cat) continue;
+        const userKey = String(s.user_id);
+        const isCommon = s.is_common === true;
+        if (isCommon) anyAssigned = true;
+        const catEntry = {
+          id: String(cat.id),
+          name: String(cat.name ?? "").trim() || "Category",
+          icon: "",
+          isCommon,
+        };
+
+        if (!userToCategories[userKey]) userToCategories[userKey] = [];
+        userToCategories[userKey].push(catEntry);
+
+        if (!categoryUsers[catEntry.id]) categoryUsers[catEntry.id] = new Set();
+        categoryUsers[catEntry.id].add(userKey);
+      }
+
+      const sharedSet = new Set<string>();
+      for (const [catId, users] of Object.entries(categoryUsers)) {
+        if (users.size > 1) sharedSet.add(catId);
+      }
+
+      setAssigned(anyAssigned);
+
+      const nextGroups: MemberGroup[] = members.map((m) => {
+        const fn = (m.first_name ?? "").trim();
+        const cats = userToCategories[m.user_id] ?? [];
+        return {
+          userId: m.user_id,
+          name: fn.length > 0 ? fn : `User ${m.user_id.slice(0, 6)}`,
+          isAdmin: m.role === "admin",
+          isMe: m.user_id === uid,
+          categories: cats,
+        };
+      });
+
+      const sig = nextGroups
+        .map(
+          (g) =>
+            `${g.userId}|${g.name}|${g.isAdmin ? "1" : "0"}|${g.categories.map((c) => c.id).join(",")}`,
+        )
+        .join("\n");
+
+      if (sig !== groupsSigRef.current) {
+        groupsSigRef.current = sig;
+        setGroups(nextGroups);
+        setSharedCategoryIds(sharedSet);
+      }
+
+      setIsAdmin(nextIsAdmin);
+      setAdminName(nextAdminName);
+      setError(null);
+
       if (!initialLoadedRef.current) {
         initialLoadedRef.current = true;
         setLoading(false);
       }
     };
 
-    const fetchTasks = async () => {
-      if (!initialLoadedRef.current) setLoading(true);
-
-      const { data: ctRows, error: ctErr } = await supabase
-        .from("circle_tasks")
-        .select("position, task_id")
-        .eq("circle_id", circleId)
-        .order("position", { ascending: true });
-
-      if (!alive) return;
-
-      if (ctErr) {
-        finishInitialLoadIfNeeded();
-        return;
-      }
-
-      const rows = (ctRows ?? []) as unknown as CircleTaskRow[];
-      if (rows.length === 0) {
-        setTasksIfChanged([]);
-        finishInitialLoadIfNeeded();
-        return;
-      }
-
-      const ids = rows.map((r) => r.task_id);
-
-      const { data: tRows, error: tErr } = await supabase
-        .from("tasks")
-        .select("id, title")
-        .in("id", ids);
-
-      if (!alive) return;
-
-      if (tErr || !tRows) {
-        finishInitialLoadIfNeeded();
-        return;
-      }
-
-      const titleById: Record<string, string> = {};
-      for (const t of tRows as unknown as TaskRow[]) titleById[t.id] = t.title;
-
-      const orderedTitles = rows.map((r) => titleById[r.task_id]).filter(Boolean);
-
-      setTasksIfChanged(orderedTitles);
-      finishInitialLoadIfNeeded();
-    };
-
-    fetchTasks();
-    const interval = setInterval(fetchTasks, POLL_MS);
+    fetchGroups();
+    const interval = setInterval(fetchGroups, POLL_MS);
 
     return () => {
       alive = false;
@@ -219,107 +290,88 @@ export default function TasksConfirmationScreen() {
 
   useEffect(() => {
     if (!circleId) return;
-    if (!isAdmin) return;
-
-    if (finalizedCircleRef.current === circleId) return;
-
-    const finalize = async () => {
-      finalizedCircleRef.current = circleId;
-
-      let difficulty: Difficulty = levelParam ?? "easy";
-
-      if (!levelParam) {
-        const { data: circleRow, error: circleErr } = await supabase
-          .from("circles")
-          .select("difficulty")
-          .eq("id", circleId)
-          .single();
-
-        const typed = (circleRow ?? null) as CircleDifficultyRow | null;
-
-        if (!circleErr && typed?.difficulty) {
-          const d = typed.difficulty;
-          if (d === "easy" || d === "medium" || d === "hard") difficulty = d;
-        }
-      }
-
-      const limit = getLimitForDifficulty(difficulty);
-
-      const { error: rpcErr } = await supabase.rpc("finalize_circle_tasks", {
-        p_circle_id: circleId,
-        p_limit: limit,
-      });
-
-      if (rpcErr) {
-        finalizedCircleRef.current = null;
-      }
-    };
-
-    finalize();
-  }, [circleId, isAdmin, levelParam]);
-
-  useEffect(() => {
-    if (!circleId) return;
-
     let alive = true;
 
-    const checkStarted = async () => {
-      const { data, error } = await supabase
+    const checkStage = async () => {
+      const { data, error: stageErr } = await supabase
         .from("circles")
-        .select("started_at")
+        .select("stage")
         .eq("id", circleId)
         .maybeSingle();
 
       if (!alive) return;
 
-      const typed = (data ?? null) as CircleStartedRow | null;
+      const typed = (data ?? null) as CircleStageRow | null;
 
-      if (!error && typed?.started_at) {
+      if (!stageErr && typed?.stage === "active" && !navigatedRef.current) {
+        navigatedRef.current = true;
         router.replace({ pathname: "/circle-home", params: { circleId } });
       }
     };
 
-    checkStarted();
-    const interval = setInterval(checkStarted, START_POLL_MS);
+    checkStage();
+    const interval = setInterval(checkStage, STAGE_POLL_MS);
 
     return () => {
       alive = false;
       clearInterval(interval);
     };
   }, [circleId]);
+
+  const handleAssign = async () => {
+    if (!circleId || assigning) return;
+
+    setAssigning(true);
+
+    const { error: rpcErr } = await supabase.rpc("compute_circle_assignments", {
+      p_circle_id: circleId,
+    });
+
+    if (rpcErr) {
+      console.error(
+        "[tasks-confirmation] compute_circle_assignments:",
+        rpcErr.message,
+      );
+      setAssigning(false);
+      Alert.alert("Could not assign categories", rpcErr.message);
+      return;
+    }
+
+    setAssigning(false);
+    setAssigned(true);
+  };
 
   const handleStart = async () => {
     if (!circleId || starting) return;
 
     setStarting(true);
 
-    const { data: userData } = await supabase.auth.getUser();
-    const uid = userData.user?.id ?? null;
+    const { error: rpcErr } = await supabase.rpc("start_circle_week", {
+      p_circle_id: circleId,
+    });
 
-    const payload: { started_at: string; started_by?: string } = {
-      started_at: new Date().toISOString(),
-    };
-    if (uid) payload.started_by = uid;
-
-    const { error } = await supabase
-      .from("circles")
-      .update(payload)
-      .eq("id", circleId)
-      .is("started_at", null);
-
-    if (error) {
-      console.log("[tasks-confirmation] start update error:", error.message);
+    if (rpcErr) {
+      console.error("[tasks-confirmation] start_circle_week:", rpcErr.message);
+      setStarting(false);
+      Alert.alert("Could not start the week", rpcErr.message);
+      return;
     }
 
+    navigatedRef.current = true;
     router.replace({ pathname: "/circle-home", params: { circleId } });
   };
 
-  const list = useMemo(() => tasks, [tasks]);
+  const list = useMemo(() => groups, [groups]);
   const startDisabled = list.length === 0 || starting;
 
   const translate = mountAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [12, 0],
+  });
+
+  const pulseOpacity = pulseAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.55, 1],
   });
 
   return (
@@ -330,12 +382,14 @@ export default function TasksConfirmationScreen() {
           { opacity: mountAnim, transform: [{ translateY: translate }] },
         ]}
       >
-        <Text style={styles.overline}>DAILY LINEUP</Text>
-        <Text style={styles.title}>Your circle's tasks.</Text>
+        <Text style={styles.overline}>WEEKLY LINEUP</Text>
+        <Text style={styles.title}>Your circle's picks.</Text>
         <Text style={styles.helper}>
-          {list.length > 0
-            ? `${list.length} tasks locked in for the week.`
-            : "Waiting for the lineup to finalize."}
+          {list.length === 0
+            ? "Waiting for selections to come in."
+            : assigned
+              ? `Your circle will do ${dailyTaskCount} tasks per day.`
+              : "Categories in. Assign to lock the circle's daily set."}
         </Text>
       </Animated.View>
 
@@ -347,63 +401,143 @@ export default function TasksConfirmationScreen() {
         {loading ? (
           <View style={styles.statusBlock}>
             <ActivityIndicator color={Colors.text.primary} size="small" />
-            <Text style={styles.statusText}>Loading tasks…</Text>
+            <Text style={styles.statusText}>Loading lineup…</Text>
+          </View>
+        ) : error ? (
+          <View style={styles.statusBlock}>
+            <Text style={styles.statusTitle}>Couldn't load picks</Text>
+            <Text style={styles.statusText}>{error}</Text>
           </View>
         ) : list.length === 0 ? (
           <View style={styles.statusBlock}>
-            <Text style={styles.statusTitle}>
-              {isAdmin ? "Finalizing tasks…" : "Waiting on admin"}
-            </Text>
+            <Text style={styles.statusTitle}>No picks yet</Text>
             <Text style={styles.statusText}>
-              {isAdmin
-                ? "We're picking the top choices now."
-                : "The admin is locking in the lineup."}
+              Members are still choosing categories.
             </Text>
           </View>
         ) : (
-          list.map((label, idx) => (
-            <View key={`task-${idx}`} style={styles.row}>
-              <View style={styles.orderChip}>
-                <Text style={styles.orderChipText}>{idx + 1}</Text>
+          list.map((g) => (
+            <View key={g.userId} style={styles.memberCard}>
+              <View style={styles.memberHead}>
+                <Text style={styles.memberName} numberOfLines={1}>
+                  {g.isMe ? `${g.name} (you)` : g.name}
+                </Text>
+                {g.isAdmin ? (
+                  <View style={styles.adminTag}>
+                    <Ionicons
+                      name="shield-checkmark"
+                      size={12}
+                      color={Colors.accent.gold}
+                    />
+                    <Text style={styles.adminTagText}>Admin</Text>
+                  </View>
+                ) : null}
               </View>
-              <Text style={styles.rowLabel} numberOfLines={2}>
-                {label}
-              </Text>
+              {g.categories.length === 0 ? (
+                <Text style={styles.memberPending}>Still picking…</Text>
+              ) : (
+                <View style={styles.pillRow}>
+                  {g.categories.map((c) => {
+                    const isShared = sharedCategoryIds.has(c.id);
+                    const showAssignment = assigned;
+                    return (
+                      <View
+                        key={`${g.userId}-${c.id}`}
+                        style={[
+                          styles.catPill,
+                          showAssignment && c.isCommon && styles.catPillCommon,
+                          !showAssignment && isShared && styles.catPillShared,
+                        ]}
+                      >
+                        <Text style={styles.catName} numberOfLines={1}>
+                          {c.name}
+                        </Text>
+                        {showAssignment ? (
+                          <View
+                            style={[
+                              styles.assignBadge,
+                              c.isCommon && styles.assignBadgeCommon,
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.assignBadgeText,
+                                c.isCommon && styles.assignBadgeTextCommon,
+                              ]}
+                            >
+                              {c.isCommon ? "Circle" : "Yours"}
+                            </Text>
+                          </View>
+                        ) : isShared ? (
+                          <View style={styles.sharedBadge}>
+                            <Text style={styles.sharedBadgeText}>Shared</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
             </View>
           ))
         )}
 
-        {!loading && list.length > 0 && !isAdmin ? (
-          <View style={styles.waitingBlock}>
+        {!loading && !error && list.length > 0 && !isAdmin ? (
+          <Animated.View
+            style={[styles.waitingBlock, { opacity: pulseOpacity }]}
+          >
             <Ionicons
               name="time-outline"
               size={16}
               color={Colors.text.secondary}
             />
             <Text style={styles.waitingText}>
-              Waiting for admin to press start…
+              Waiting for {adminName || "the admin"} to start…
             </Text>
-          </View>
+          </Animated.View>
         ) : null}
       </ScrollView>
 
       {isAdmin ? (
         <View style={styles.footer}>
-          <Pressable
-            onPress={handleStart}
-            disabled={startDisabled}
-            style={({ pressed }) => [
-              styles.primary,
-              startDisabled && styles.primaryDisabled,
-              pressed && !startDisabled && styles.primaryPressed,
-            ]}
-          >
-            {starting ? (
-              <ActivityIndicator color={Colors.brand.greenText} size="small" />
-            ) : (
-              <Text style={styles.primaryText}>Start the week</Text>
-            )}
-          </Pressable>
+          {!assigned ? (
+            <Pressable
+              onPress={handleAssign}
+              disabled={startDisabled || assigning}
+              style={({ pressed }) => [
+                styles.secondary,
+                (startDisabled || assigning) && styles.primaryDisabled,
+                pressed &&
+                  !(startDisabled || assigning) &&
+                  styles.primaryPressed,
+              ]}
+            >
+              {assigning ? (
+                <ActivityIndicator color={Colors.text.primary} size="small" />
+              ) : (
+                <Text style={styles.secondaryText}>Assign categories</Text>
+              )}
+            </Pressable>
+          ) : (
+            <Pressable
+              onPress={handleStart}
+              disabled={startDisabled}
+              style={({ pressed }) => [
+                styles.primary,
+                startDisabled && styles.primaryDisabled,
+                pressed && !startDisabled && styles.primaryPressed,
+              ]}
+            >
+              {starting ? (
+                <ActivityIndicator
+                  color={Colors.brand.greenText}
+                  size="small"
+                />
+              ) : (
+                <Text style={styles.primaryText}>Start the week</Text>
+              )}
+            </Pressable>
+          )}
         </View>
       ) : null}
     </SafeAreaView>
@@ -411,8 +545,6 @@ export default function TasksConfirmationScreen() {
 }
 
 const PRIMARY_HEIGHT = 54;
-const ROW_MIN_HEIGHT = 60;
-const ORDER_CHIP = 32;
 
 const styles = StyleSheet.create({
   safeArea: {
@@ -443,34 +575,102 @@ const styles = StyleSheet.create({
   listContent: {
     paddingHorizontal: Spacing.screenHorizontal,
     paddingBottom: 32,
+    gap: 12,
+  },
+  memberCard: {
+    paddingHorizontal: Spacing.cardPadding,
+    paddingVertical: 14,
+    borderRadius: Radius.card,
+    backgroundColor: Colors.bg.card,
     gap: 10,
   },
-  row: {
-    minHeight: ROW_MIN_HEIGHT,
-    paddingHorizontal: Spacing.cardPadding,
-    paddingVertical: 12,
-    borderRadius: Radius.cardSm,
-    backgroundColor: Colors.bg.card,
+  memberHead: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 14,
+    justifyContent: "space-between",
+    gap: 12,
   },
-  orderChip: {
-    width: ORDER_CHIP,
-    height: ORDER_CHIP,
-    borderRadius: ORDER_CHIP / 2,
-    backgroundColor: Colors.bg.cardActive,
-    alignItems: "center",
-    justifyContent: "center",
+  memberName: {
+    ...Typography.body,
+    fontWeight: "600",
+    flex: 1,
   },
-  orderChipText: {
+  memberPending: {
     ...Typography.label,
+  },
+  adminTag: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.bg.cardActive,
+  },
+  adminTagText: {
+    ...Typography.caption,
+    color: Colors.accent.gold,
+    fontWeight: "600",
+  },
+  pillRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  catPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.bg.cardActive,
+    maxWidth: "100%",
+  },
+  catPillShared: {
+    borderWidth: 1,
+    borderColor: Colors.brand.greenBright,
+  },
+  catPillCommon: {
+    borderWidth: 1,
+    borderColor: Colors.brand.green,
+  },
+  assignBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.bg.base,
+  },
+  assignBadgeCommon: {
+    backgroundColor: Colors.brand.green,
+  },
+  assignBadgeText: {
+    ...Typography.caption,
+    color: Colors.text.secondary,
+    fontWeight: "600",
+  },
+  assignBadgeTextCommon: {
+    color: Colors.brand.greenText,
+  },
+  catIcon: {
+    fontSize: 16,
+    lineHeight: 18,
+  },
+  catName: {
+    ...Typography.caption,
     color: Colors.text.primary,
     fontWeight: "600",
   },
-  rowLabel: {
-    ...Typography.body,
-    flex: 1,
+  sharedBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.bg.base,
+  },
+  sharedBadgeText: {
+    ...Typography.caption,
+    color: Colors.brand.greenBright,
+    fontWeight: "600",
   },
   statusBlock: {
     alignItems: "center",
@@ -511,6 +711,18 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.brand.green,
     alignItems: "center",
     justifyContent: "center",
+  },
+  secondary: {
+    height: PRIMARY_HEIGHT,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.bg.card,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  secondaryText: {
+    ...Typography.body,
+    color: Colors.text.primary,
+    fontWeight: "600",
   },
   primaryPressed: {
     opacity: 0.8,

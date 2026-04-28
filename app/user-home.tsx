@@ -17,14 +17,26 @@ import Svg, { Circle as SvgCircle } from "react-native-svg";
 import { supabase } from "../src/lib/supabase";
 import { TabBar } from "../src/components/TabBar";
 import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
+import { STORAGE_KEYS } from "../src/constants/storage";
+import type { SuggestedCategory } from "../src/types/questionnaire";
+
+const DEFAULT_DAILY_TASK_COUNT = 6;
 
 type TodayTaskItem = {
   key: string;
   circleId: string;
   circleName: string;
+  categoryId: string;
+  categoryName: string;
+  categoryIcon: string;
+  subtaskId: string;
   title: string;
   done: boolean;
 };
+
+function todayDateString() {
+  return new Date().toISOString().slice(0, 10);
+}
 
 const FIRST_NAME_KEY = "profileFirstName";
 const POINTS_PER_TASK = 5;
@@ -35,16 +47,6 @@ const RING_RADIUS = (RING_SIZE - RING_STROKE) / 2;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 const AnimatedCircle = Animated.createAnimatedComponent(SvgCircle);
 
-function startOfDayLocal(d = new Date()) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-function endOfDayLocal(d = new Date()) {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
-}
 function startOfWeekUTC(d = new Date()) {
   const x = new Date(
     Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()),
@@ -96,18 +98,17 @@ export default function UserHome() {
 
       const keys = Array.from(selected);
       const targets = todayTasks.filter((t) => keys.includes(t.key));
-      const rows = targets.map((t) => {
-        const taskId = t.key.includes(":")
-          ? t.key.slice(t.key.indexOf(":") + 1)
-          : t.key;
-        return {
-          circle_id: t.circleId,
-          user_id: uid,
-          task_id: taskId,
-          completed_at: new Date().toISOString(),
-          points: POINTS_PER_TASK,
-        };
-      });
+      const nowIso = new Date().toISOString();
+      const today = todayDateString();
+      const rows = targets.map((t) => ({
+        circle_id: t.circleId,
+        user_id: uid,
+        category_id: t.categoryId,
+        subtask_id: t.subtaskId,
+        completed_at: nowIso,
+        completed_on: today,
+        points: POINTS_PER_TASK,
+      }));
 
       const { error } = await supabase.from("task_completions").insert(rows);
       const insertErr = error as { code?: string; message?: string } | null;
@@ -259,72 +260,174 @@ export default function UserHome() {
           circleNameById[c.id] = nm || (cd ? `Circle ${cd}` : "Circle");
         }
 
-        const { data: ctRows } = await supabase
-          .from("circle_tasks")
-          .select("circle_id, position, task_id")
-          .in("circle_id", circleIds)
-          .order("circle_id", { ascending: true })
-          .order("position", { ascending: true });
+        // Daily task count per circle (defaults to 6 when missing).
+        const dailyTaskCountByCircle: Record<string, number> = {};
+        if (circleIds.length > 0) {
+          const { data: cfgRows } = await supabase
+            .from("circles")
+            .select("id, daily_task_count")
+            .in("id", circleIds);
+          if (cfgRows) {
+            type CfgRow = { id: string; daily_task_count?: number | null };
+            for (const c of cfgRows as unknown as CfgRow[]) {
+              dailyTaskCountByCircle[String(c.id)] =
+                typeof c.daily_task_count === "number"
+                  ? c.daily_task_count
+                  : DEFAULT_DAILY_TASK_COUNT;
+            }
+          }
+        }
+
+        // Preferred subtask titles per category, from this user's saved suggestions.
+        const preferredTitlesByCat: Record<string, Set<string>> = {};
+        try {
+          const stored = await AsyncStorage.getItem(
+            STORAGE_KEYS.SUGGESTED_CATEGORIES,
+          );
+          if (stored) {
+            const arr = JSON.parse(stored) as SuggestedCategory[];
+            for (const s of arr) {
+              preferredTitlesByCat[String(s.id)] = new Set(
+                (s.suggestedSubtasks ?? []).map((t) => t.toLowerCase()),
+              );
+            }
+          }
+        } catch {
+          // ignore
+        }
+
+        // Per-circle category picks for this user. Each picked category fans
+        // out to all 5 of its category_subtasks for the week.
+        const { data: selRows } = await supabase
+          .from("circle_member_category_selections")
+          .select("circle_id, category_id")
+          .eq("user_id", uid)
+          .in("circle_id", circleIds);
 
         if (!alive) return;
 
-        type CircleTaskRow = {
-          circle_id: string;
-          position: number;
-          task_id: string;
-        };
-        const ctList = (ctRows ?? []) as unknown as CircleTaskRow[];
-        const taskIds = Array.from(new Set(ctList.map((r) => r.task_id)));
+        type SelRow = { circle_id: string; category_id: string };
+        const selList = (selRows ?? []) as unknown as SelRow[];
 
-        const titleById: Record<string, string> = {};
-        if (taskIds.length > 0) {
-          const { data: tRows } = await supabase
-            .from("tasks")
-            .select("id, title")
-            .in("id", taskIds);
-          if (tRows) {
-            type TaskRow = { id: string; title: string };
-            for (const t of tRows as unknown as TaskRow[]) {
-              titleById[t.id] = String(t.title ?? "").trim();
+        const categoryIds = Array.from(
+          new Set(selList.map((s) => String(s.category_id))),
+        );
+
+        const categoryById: Record<string, { name: string; icon: string }> = {};
+        if (categoryIds.length > 0) {
+          const { data: catRows } = await supabase
+            .from("categories")
+            .select("id, name, icon")
+            .in("id", categoryIds);
+          if (catRows) {
+            type CatRow = { id: string; name: string; icon: string };
+            for (const c of catRows as unknown as CatRow[]) {
+              categoryById[String(c.id)] = {
+                name: String(c.name ?? "").trim() || "Category",
+                icon: "",
+              };
             }
           }
         }
 
-        const dayStart = startOfDayLocal();
-        const dayEnd = endOfDayLocal();
+        type SubtaskRow = {
+          id: string;
+          category_id: string;
+          title: string;
+          sort_order: number;
+        };
+        let subtasks: SubtaskRow[] = [];
+        if (categoryIds.length > 0) {
+          const { data: stRows } = await supabase
+            .from("category_subtasks")
+            .select("id, category_id, title, sort_order")
+            .in("category_id", categoryIds)
+            .order("sort_order", { ascending: true });
+          if (stRows) subtasks = stRows as unknown as SubtaskRow[];
+        }
+
+        const today = todayDateString();
         const doneSet = new Set<string>();
 
-        if (taskIds.length > 0) {
+        if (selList.length > 0) {
           const { data: doneRows } = await supabase
             .from("task_completions")
-            .select("circle_id, task_id, completed_at")
+            .select("circle_id, subtask_id")
             .eq("user_id", uid)
-            .gte("completed_at", dayStart.toISOString())
-            .lte("completed_at", dayEnd.toISOString());
+            .in("circle_id", circleIds)
+            .eq("completed_on", today);
 
           if (doneRows) {
-            type CompletionRow = { circle_id: string; task_id: string };
+            type CompletionRow = { circle_id: string; subtask_id: string };
             for (const r of doneRows as unknown as CompletionRow[]) {
-              doneSet.add(`${r.circle_id}:${r.task_id}`);
+              doneSet.add(`${r.circle_id}:${r.subtask_id}`);
             }
           }
         }
 
-        const nextTasks: TodayTaskItem[] = ctList
-          .map((r) => {
-            const title = titleById[r.task_id];
-            if (!title) return null;
-            const circleId = String(r.circle_id);
-            const key = `${circleId}:${r.task_id}`;
-            return {
+        const subtasksByCategory: Record<string, SubtaskRow[]> = {};
+        for (const st of subtasks) {
+          const k = String(st.category_id);
+          if (!subtasksByCategory[k]) subtasksByCategory[k] = [];
+          subtasksByCategory[k].push(st);
+        }
+
+        // Count categories per circle to derive per-category slice sizes.
+        const catCountByCircle: Record<string, number> = {};
+        for (const sel of selList) {
+          const cId = String(sel.circle_id);
+          catCountByCircle[cId] = (catCountByCircle[cId] ?? 0) + 1;
+        }
+
+        const nextTasks: TodayTaskItem[] = [];
+        for (const sel of selList) {
+          const circleId = String(sel.circle_id);
+          const categoryId = String(sel.category_id);
+          const cat = categoryById[categoryId];
+          if (!cat) continue;
+          const sts = subtasksByCategory[categoryId] ?? [];
+
+          const dailyCount =
+            dailyTaskCountByCircle[circleId] ?? DEFAULT_DAILY_TASK_COUNT;
+          const catCount = Math.max(1, catCountByCircle[circleId] ?? 1);
+          const perCategory = Math.max(1, Math.floor(dailyCount / catCount));
+
+          const preferred = preferredTitlesByCat[categoryId];
+          const sorted = preferred
+            ? [...sts].sort((a, b) => {
+                const at = String(a.title ?? "")
+                  .trim()
+                  .toLowerCase();
+                const bt = String(b.title ?? "")
+                  .trim()
+                  .toLowerCase();
+                const ap = preferred.has(at) ? 0 : 1;
+                const bp = preferred.has(bt) ? 0 : 1;
+                if (ap !== bp) return ap - bp;
+                return (
+                  (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0)
+                );
+              })
+            : sts;
+
+          for (const st of sorted.slice(0, perCategory)) {
+            const subtaskId = String(st.id);
+            const title = String(st.title ?? "").trim();
+            if (!title) continue;
+            const key = `${circleId}:${subtaskId}`;
+            nextTasks.push({
               key,
               circleId,
               circleName: circleNameById[circleId] ?? "Circle",
+              categoryId,
+              categoryName: cat.name,
+              categoryIcon: cat.icon,
+              subtaskId,
               title,
               done: doneSet.has(key),
-            };
-          })
-          .filter((x): x is TodayTaskItem => x !== null);
+            });
+          }
+        }
 
         // My weekly points across all circles
         const wStart = startOfWeekUTC();
@@ -492,19 +595,41 @@ export default function UserHome() {
               </View>
             ) : (
               <View style={styles.taskList}>
-                {visibleTasks.map((t) => {
+                {visibleTasks.map((t, i) => {
+                  const prev = i > 0 ? visibleTasks[i - 1] : null;
+                  const showHeader =
+                    !prev ||
+                    prev.circleId !== t.circleId ||
+                    prev.categoryId !== t.categoryId;
                   const isSelected = selected.has(t.key);
                   return (
-                    <Pressable
-                      key={t.key}
-                      onPress={() => toggleSelect(t.key, t.done)}
-                      disabled={t.done}
-                      style={({ pressed }) => [
-                        styles.taskRow,
-                        pressed && !t.done && styles.taskRowPressed,
-                      ]}
-                    >
-                      <View style={styles.taskTextCol}>
+                    <View key={t.key}>
+                      {showHeader ? (
+                        <View style={styles.categoryHeader}>
+                          <Text style={styles.categoryIcon}>
+                            {t.categoryIcon}
+                          </Text>
+                          <View style={styles.categoryHeaderText}>
+                            <Text style={styles.categoryName} numberOfLines={1}>
+                              {t.categoryName}
+                            </Text>
+                            <Text
+                              style={styles.categoryCircle}
+                              numberOfLines={1}
+                            >
+                              {t.circleName}
+                            </Text>
+                          </View>
+                        </View>
+                      ) : null}
+                      <Pressable
+                        onPress={() => toggleSelect(t.key, t.done)}
+                        disabled={t.done}
+                        style={({ pressed }) => [
+                          styles.taskRow,
+                          pressed && !t.done && styles.taskRowPressed,
+                        ]}
+                      >
                         <Text
                           style={[
                             styles.taskTitle,
@@ -514,28 +639,25 @@ export default function UserHome() {
                         >
                           {t.title}
                         </Text>
-                        <Text style={styles.taskCircle} numberOfLines={1}>
-                          {t.circleName}
-                        </Text>
-                      </View>
-                      {t.done ? (
-                        <Ionicons
-                          name="checkmark-circle"
-                          size={22}
-                          color={Colors.brand.greenBright}
-                        />
-                      ) : isSelected ? (
-                        <View style={styles.taskCheckSelected}>
+                        {t.done ? (
                           <Ionicons
-                            name="checkmark"
-                            size={14}
-                            color={Colors.bg.base}
+                            name="checkmark-circle"
+                            size={22}
+                            color={Colors.brand.greenBright}
                           />
-                        </View>
-                      ) : (
-                        <View style={styles.taskPending} />
-                      )}
-                    </Pressable>
+                        ) : isSelected ? (
+                          <View style={styles.taskCheckSelected}>
+                            <Ionicons
+                              name="checkmark"
+                              size={14}
+                              color={Colors.bg.base}
+                            />
+                          </View>
+                        ) : (
+                          <View style={styles.taskPending} />
+                        )}
+                      </Pressable>
+                    </View>
                   );
                 })}
                 {todayTasks.length > 5 ? (
@@ -765,17 +887,33 @@ const styles = StyleSheet.create({
     color: Colors.brand.greenText,
     fontWeight: "600",
   },
-  taskTextCol: {
-    flex: 1,
-    gap: 3,
-  },
   taskTitle: {
     ...Typography.body,
+    flex: 1,
   },
   taskTitleDone: {
     color: Colors.text.secondary,
   },
-  taskCircle: {
+  categoryHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.inlineGap,
+    paddingTop: 14,
+    paddingBottom: 4,
+  },
+  categoryIcon: {
+    fontSize: 20,
+    lineHeight: 22,
+  },
+  categoryHeaderText: {
+    flex: 1,
+    gap: 2,
+  },
+  categoryName: {
+    ...Typography.section,
+    fontSize: 15,
+  },
+  categoryCircle: {
     ...Typography.caption,
   },
   taskPending: {

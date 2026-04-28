@@ -37,24 +37,24 @@ const LEVELS: readonly LevelCopy[] = [
   {
     id: "easy",
     overline: "Easy",
-    count: "5–6",
-    descriptor: "tasks every day",
+    count: "2",
+    descriptor: "categories · Casual pace",
     intensity: 0.33,
     dot: Colors.brand.greenBright,
   },
   {
     id: "medium",
     overline: "Medium",
-    count: "8–10",
-    descriptor: "tasks every day",
+    count: "3",
+    descriptor: "categories · Steady commitment",
     intensity: 0.66,
     dot: Colors.accent.gold,
   },
   {
     id: "hard",
     overline: "Hard",
-    count: "10–12",
-    descriptor: "tasks every day",
+    count: "5",
+    descriptor: "categories · Full send",
     intensity: 1,
     dot: Colors.accent.pink,
   },
@@ -74,7 +74,9 @@ export default function Onboarding() {
   const code = Array.isArray(params.code) ? params.code[0] : params.code;
 
   const rawName =
-    (Array.isArray(params.circleName) ? params.circleName[0] : params.circleName) ??
+    (Array.isArray(params.circleName)
+      ? params.circleName[0]
+      : params.circleName) ??
     (Array.isArray(params.name) ? params.name[0] : params.name) ??
     "";
 
@@ -132,13 +134,17 @@ export default function Onboarding() {
       const circleCode = String(rpcRow.out_code ?? rpcRow.code ?? "");
 
       if (!circleId || circleId === "undefined") {
-        Alert.alert("Error", "Circle was created but circle id was not returned.");
+        Alert.alert(
+          "Error",
+          "Circle was created but circle id was not returned.",
+        );
         return;
       }
 
       try {
         await AsyncStorage.setItem("activeCircleId", circleId);
-        if (circleCode) await AsyncStorage.setItem("activeCircleCode", circleCode);
+        if (circleCode)
+          await AsyncStorage.setItem("activeCircleCode", circleCode);
         await AsyncStorage.setItem("activeDifficulty", level);
         await AsyncStorage.setItem("activeCircleName", circleName);
       } catch {
@@ -161,7 +167,8 @@ export default function Onboarding() {
           <Text style={styles.overline}>Step 3 · Difficulty</Text>
           <Text style={styles.question}>Pick your pace.</Text>
           <Text style={styles.subtitle}>
-            Everyone in the circle runs the same level this week. You can change it next Monday.
+            Everyone in the circle runs the same level this week. You can change
+            it next Monday.
           </Text>
         </View>
 
@@ -195,11 +202,16 @@ export default function Onboarding() {
                 >
                   <View style={styles.cardHead}>
                     <View style={styles.tierTag}>
-                      <View style={[styles.dot, { backgroundColor: lvl.dot }]} />
+                      <View
+                        style={[styles.dot, { backgroundColor: lvl.dot }]}
+                      />
                       <Text style={styles.tierLabel}>{lvl.overline}</Text>
                     </View>
                     {isLoading ? (
-                      <ActivityIndicator color={Colors.text.primary} size="small" />
+                      <ActivityIndicator
+                        color={Colors.text.primary}
+                        size="small"
+                      />
                     ) : null}
                   </View>
 

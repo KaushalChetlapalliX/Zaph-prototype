@@ -15,12 +15,7 @@ import { router, useLocalSearchParams } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "../src/lib/supabase";
-import {
-  Colors,
-  Radius,
-  Spacing,
-  Typography,
-} from "../src/constants/design";
+import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
 
 type MemberRow = {
   user_id: string;
@@ -97,7 +92,7 @@ export default function CircleMembersScreen() {
   const maybeNavigateToSelect = (
     nextStage: string,
     nextDifficulty: Difficulty,
-    nextCode: string
+    nextCode: string,
   ) => {
     if (navigatedRef.current) return;
     if (nextStage !== "selecting") return;
@@ -105,7 +100,7 @@ export default function CircleMembersScreen() {
     navigatedRef.current = true;
 
     router.replace({
-      pathname: "/select-tasks",
+      pathname: "/select-categories",
       params: {
         level: nextDifficulty,
         circleId: circleId ?? "",
@@ -122,7 +117,7 @@ export default function CircleMembersScreen() {
     const applyCircleIfChanged = (
       nextCode: string,
       nextDifficulty: Difficulty,
-      nextStage: string
+      nextStage: string,
     ) => {
       const sig = `${nextCode}|${nextDifficulty}|${nextStage}`;
       if (sig === circleSigRef.current) return;
@@ -145,7 +140,8 @@ export default function CircleMembersScreen() {
 
       const typed = data as unknown as CirclePayload;
       const nextCode = String(typed.code ?? "");
-      const nextDifficulty: Difficulty = (typed.difficulty ?? "easy") as Difficulty;
+      const nextDifficulty: Difficulty = (typed.difficulty ??
+        "easy") as Difficulty;
       const nextStage = String(typed.stage ?? "lobby");
 
       applyCircleIfChanged(nextCode, nextDifficulty, nextStage);
@@ -167,20 +163,21 @@ export default function CircleMembersScreen() {
         (payload) => {
           const newRow = (payload.new ?? {}) as CirclePayload;
           const nextStage = String(newRow.stage ?? "lobby");
-          const nextDifficulty: Difficulty = (newRow.difficulty ?? "easy") as Difficulty;
+          const nextDifficulty: Difficulty = (newRow.difficulty ??
+            "easy") as Difficulty;
           const nextCode = String(newRow.code ?? "");
 
           applyCircleIfChanged(
             nextCode || circleCode,
             nextDifficulty,
-            nextStage
+            nextStage,
           );
           maybeNavigateToSelect(
             nextStage,
             nextDifficulty,
-            nextCode || circleCode
+            nextCode || circleCode,
           );
-        }
+        },
       )
       .subscribe();
 
@@ -232,7 +229,7 @@ export default function CircleMembersScreen() {
     const makeMembersSig = (rows: MemberRow[]) =>
       rows
         .map(
-          (m) => `${m.user_id}|${(m.first_name ?? "").trim()}|${m.role ?? ""}`
+          (m) => `${m.user_id}|${(m.first_name ?? "").trim()}|${m.role ?? ""}`,
         )
         .join(",");
 
@@ -307,7 +304,7 @@ export default function CircleMembersScreen() {
     setStarting(false);
 
     router.replace({
-      pathname: "/select-tasks",
+      pathname: "/select-categories",
       params: {
         level: difficulty,
         circleId,

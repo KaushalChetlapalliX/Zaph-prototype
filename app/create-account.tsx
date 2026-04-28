@@ -39,7 +39,9 @@ export default function CreateAccount() {
   const [loadingGoogle, setLoadingGoogle] = useState(false);
 
   const upsertProfile = async (payload: ProfileUpsert) => {
-    const { error } = await supabase.from("profiles").upsert(payload, { onConflict: "id" });
+    const { error } = await supabase
+      .from("profiles")
+      .upsert(payload, { onConflict: "id" });
     if (error) {
       console.log("profiles upsert error:", error.message);
     }
@@ -104,7 +106,7 @@ export default function CreateAccount() {
       last_name: ln,
     });
 
-    router.replace("/create-circle");
+    router.replace("/questionnaire");
   };
 
   const handleGoogleSignIn = async () => {
@@ -142,11 +144,16 @@ export default function CreateAccount() {
 
     const parsed = Linking.parse(result.url);
     const code =
-      typeof parsed.queryParams?.code === "string" ? parsed.queryParams.code : undefined;
+      typeof parsed.queryParams?.code === "string"
+        ? parsed.queryParams.code
+        : undefined;
 
     if (!code) {
       setLoadingGoogle(false);
-      Alert.alert("Google sign in failed", "No code returned from Google redirect.");
+      Alert.alert(
+        "Google sign in failed",
+        "No code returned from Google redirect.",
+      );
       return;
     }
 
@@ -162,15 +169,23 @@ export default function CreateAccount() {
     const user = exchangeData?.user;
     if (!user?.id) {
       setLoadingGoogle(false);
-      Alert.alert("Google sign in failed", "No user returned after session exchange.");
+      Alert.alert(
+        "Google sign in failed",
+        "No user returned after session exchange.",
+      );
       return;
     }
 
     // user_metadata from Supabase OAuth is unstructured Record<string, any> —
     // asserting to read optional Google fields off it.
-    const meta = (user.user_metadata ?? {}) as Record<string, string | undefined>;
+    const meta = (user.user_metadata ?? {}) as Record<
+      string,
+      string | undefined
+    >;
     const fullFromGoogle =
-      meta.full_name || meta.name || `${meta.given_name ?? ""} ${meta.family_name ?? ""}`.trim();
+      meta.full_name ||
+      meta.name ||
+      `${meta.given_name ?? ""} ${meta.family_name ?? ""}`.trim();
 
     let fn = (meta.first_name || meta.given_name || "").trim();
     let ln = (meta.last_name || meta.family_name || "").trim();
@@ -202,8 +217,18 @@ export default function CreateAccount() {
       last_name: ln || null,
     });
 
+    const { data: profileRow } = await supabase
+      .from("profiles")
+      .select("questionnaire_completed")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    const completed =
+      (profileRow as { questionnaire_completed?: boolean } | null)
+        ?.questionnaire_completed === true;
+
     setLoadingGoogle(false);
-    router.replace("/create-circle");
+    router.replace(completed ? "/user-home" : "/questionnaire");
   };
 
   const busy = loadingEmail || loadingGoogle;
@@ -267,7 +292,10 @@ export default function CreateAccount() {
             >
               {loadingEmail ? (
                 <View style={styles.loadingRow}>
-                  <ActivityIndicator color={Colors.brand.greenText} size="small" />
+                  <ActivityIndicator
+                    color={Colors.brand.greenText}
+                    size="small"
+                  />
                   <Text style={styles.primaryButtonText}>Creating</Text>
                 </View>
               ) : (
@@ -289,16 +317,28 @@ export default function CreateAccount() {
                   <Text style={styles.secondaryButtonText}>Signing in</Text>
                 </View>
               ) : (
-                <Text style={styles.secondaryButtonText}>Continue with Google</Text>
+                <Text style={styles.secondaryButtonText}>
+                  Continue with Google
+                </Text>
               )}
             </Pressable>
 
             <Pressable
-              onPress={() => Alert.alert("Apple login", "Apple login is not set up right now.")}
-              style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+              onPress={() =>
+                Alert.alert(
+                  "Apple login",
+                  "Apple login is not set up right now.",
+                )
+              }
+              style={({ pressed }) => [
+                styles.secondaryButton,
+                pressed && styles.pressed,
+              ]}
               disabled={busy}
             >
-              <Text style={styles.secondaryButtonText}>Continue with Apple</Text>
+              <Text style={styles.secondaryButtonText}>
+                Continue with Apple
+              </Text>
             </Pressable>
           </View>
         </ScrollView>

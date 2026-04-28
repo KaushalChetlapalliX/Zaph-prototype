@@ -22,29 +22,35 @@ import {
   LeaderRow,
 } from "../src/components/LeaderboardWidget";
 import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
+import { STORAGE_KEYS } from "../src/constants/storage";
+import type { SuggestedCategory } from "../src/types/questionnaire";
 
 const POLL_MS = 3000;
 const POINTS_PER_TASK = 5;
+const DEFAULT_DAILY_TASK_COUNT = 6;
 
-type TaskItem = { key: string; title: string; done: boolean };
+type TaskItem = {
+  key: string;
+  subtaskId: string;
+  categoryId: string;
+  categoryName: string;
+  categoryIcon: string;
+  title: string;
+  done: boolean;
+};
 type ActivityRow = {
   id: string;
   userId: string;
   name: string;
-  taskTitle: string;
+  subtaskTitle: string;
+  categoryName: string;
   at: number;
 };
 
-function startOfDayLocal(d = new Date()) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
+function todayDateString() {
+  return new Date().toISOString().slice(0, 10);
 }
-function endOfDayLocal(d = new Date()) {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
-}
+
 function startOfWeekUTC(d = new Date()) {
   const x = new Date(
     Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()),
@@ -193,81 +199,184 @@ export default function CircleHome() {
           return;
         }
 
-        const { data: ctRows } = await supabase
-          .from("circle_tasks")
-          .select("position, task_id, created_at")
-          .eq("circle_id", circleId)
-          .order("position", { ascending: true });
+        const { data: circleRow } = await supabase
+          .from("circles")
+          .select("started_at, daily_task_count")
+          .eq("id", circleId)
+          .maybeSingle();
 
         if (!alive) return;
 
-        type CT = {
-          position: number;
-          task_id: string;
-          created_at?: string | null;
+        type CircleRow = {
+          started_at?: string | null;
+          daily_task_count?: number | null;
         };
-        const ctList = (ctRows ?? []) as unknown as CT[];
-        const taskIds = ctList.map((r) => String(r.task_id));
-        const uniqueIds = Array.from(new Set(taskIds));
-
-        // Day-1 anchor = earliest circle_tasks.created_at, snapped to UTC midnight.
-        // Falls back to the start of the current UTC week if no timestamps exist.
-        const createdMs = ctList
-          .map((r) => (r.created_at ? new Date(r.created_at).getTime() : NaN))
-          .filter((n) => Number.isFinite(n)) as number[];
-        const anchorRaw =
-          createdMs.length > 0
-            ? Math.min(...createdMs)
-            : startOfWeekUTC().getTime();
-        const anchorDate = new Date(anchorRaw);
+        const startedAt = (circleRow as CircleRow | null)?.started_at ?? null;
+        const dailyTaskCount =
+          typeof (circleRow as CircleRow | null)?.daily_task_count === "number"
+            ? ((circleRow as CircleRow).daily_task_count as number)
+            : DEFAULT_DAILY_TASK_COUNT;
+        const anchorDate = startedAt ? new Date(startedAt) : startOfWeekUTC();
         anchorDate.setUTCHours(0, 0, 0, 0);
         const anchorMs = anchorDate.getTime();
 
-        const titleById: Record<string, string> = {};
-        if (uniqueIds.length > 0) {
-          const { data: tRows } = await supabase
-            .from("tasks")
-            .select("id, title")
-            .in("id", uniqueIds);
-          if (tRows) {
-            type T = { id: string; title: string };
-            for (const t of tRows as unknown as T[]) {
-              const title = String(t.title ?? "").trim();
-              if (title) titleById[String(t.id)] = title;
+        // Categories this user picked for this circle.
+        const { data: selRows } = await supabase
+          .from("circle_member_category_selections")
+          .select("category_id, categories(id, name, icon)")
+          .eq("circle_id", circleId)
+          .eq("user_id", uid);
+
+        if (!alive) return;
+
+        type CategoryMini = { id: string; name: string; icon: string };
+        type SelRow = {
+          category_id: string;
+          categories: CategoryMini | CategoryMini[] | null;
+        };
+        const selList = (selRows ?? []) as unknown as SelRow[];
+        const myCategoryIds = selList.map((r) => String(r.category_id));
+        const categoryById: Record<string, CategoryMini> = {};
+        for (const r of selList) {
+          const cat = Array.isArray(r.categories)
+            ? r.categories[0]
+            : r.categories;
+          if (cat) {
+            categoryById[String(r.category_id)] = {
+              id: String(cat.id),
+              name: String(cat.name ?? ""),
+              icon: String(cat.icon ?? ""),
+            };
+          }
+        }
+
+        // Preferred subtask titles by category id, from the user's questionnaire suggestions.
+        const preferredTitlesByCat: Record<string, Set<string>> = {};
+        try {
+          const stored = await AsyncStorage.getItem(
+            STORAGE_KEYS.SUGGESTED_CATEGORIES,
+          );
+          if (stored) {
+            const arr = JSON.parse(stored) as SuggestedCategory[];
+            for (const s of arr) {
+              preferredTitlesByCat[String(s.id)] = new Set(
+                (s.suggestedSubtasks ?? []).map((t) => t.toLowerCase()),
+              );
+            }
+          }
+        } catch {
+          // ignore
+        }
+
+        // All subtasks for the user's selected categories, sliced to circle's daily_task_count.
+        const subtaskById: Record<
+          string,
+          { id: string; categoryId: string; title: string; sortOrder: number }
+        > = {};
+        const orderedSubtaskIds: string[] = [];
+        if (myCategoryIds.length > 0) {
+          const { data: stRows } = await supabase
+            .from("category_subtasks")
+            .select("id, category_id, title, sort_order")
+            .in("category_id", myCategoryIds)
+            .order("category_id", { ascending: true })
+            .order("sort_order", { ascending: true });
+
+          if (!alive) return;
+
+          type ST = {
+            id: string;
+            category_id: string;
+            title: string;
+            sort_order: number;
+          };
+
+          const byCat: Record<
+            string,
+            { id: string; title: string; sortOrder: number }[]
+          > = {};
+          for (const s of (stRows ?? []) as unknown as ST[]) {
+            const sid = String(s.id);
+            const title = String(s.title ?? "").trim();
+            if (!title) continue;
+            const catId = String(s.category_id);
+            subtaskById[sid] = {
+              id: sid,
+              categoryId: catId,
+              title,
+              sortOrder: Number(s.sort_order) || 0,
+            };
+            if (!byCat[catId]) byCat[catId] = [];
+            byCat[catId].push({
+              id: sid,
+              title,
+              sortOrder: Number(s.sort_order) || 0,
+            });
+          }
+
+          const catCount = myCategoryIds.length || 1;
+          const perCategory = Math.max(
+            1,
+            Math.floor(dailyTaskCount / catCount),
+          );
+
+          for (const catId of myCategoryIds) {
+            const list = byCat[catId] ?? [];
+            const preferred = preferredTitlesByCat[catId];
+            const sorted = preferred
+              ? [...list].sort((a, b) => {
+                  const ap = preferred.has(a.title.toLowerCase()) ? 0 : 1;
+                  const bp = preferred.has(b.title.toLowerCase()) ? 0 : 1;
+                  if (ap !== bp) return ap - bp;
+                  return a.sortOrder - b.sortOrder;
+                })
+              : list;
+            for (const item of sorted.slice(0, perCategory)) {
+              orderedSubtaskIds.push(item.id);
             }
           }
         }
 
-        const dayStart = startOfDayLocal();
-        const dayEnd = endOfDayLocal();
+        // Today's completions for this user (used to mark Today's list rows).
+        const today = todayDateString();
         const { data: myDoneRows } = await supabase
           .from("task_completions")
-          .select("task_id")
+          .select("subtask_id")
           .eq("circle_id", circleId)
           .eq("user_id", uid)
-          .gte("completed_at", dayStart.toISOString())
-          .lte("completed_at", dayEnd.toISOString());
+          .eq("completed_on", today);
 
         const completedSet = new Set<string>();
         if (myDoneRows) {
-          type C = { task_id: string };
+          type C = { subtask_id: string };
           for (const c of myDoneRows as unknown as C[]) {
-            if (c.task_id) completedSet.add(String(c.task_id));
+            if (c.subtask_id) completedSet.add(String(c.subtask_id));
           }
         }
 
-        const next: TaskItem[] = taskIds
-          .map((tid) => {
-            const title = titleById[tid];
-            if (!title) return null;
-            return { key: tid, title, done: completedSet.has(tid) };
+        const next: TaskItem[] = orderedSubtaskIds
+          .map((sid) => {
+            const st = subtaskById[sid];
+            if (!st) return null;
+            const cat = categoryById[st.categoryId];
+            if (!cat) return null;
+            const item: TaskItem = {
+              key: sid,
+              subtaskId: sid,
+              categoryId: cat.id,
+              categoryName: cat.name,
+              categoryIcon: cat.icon,
+              title: st.title,
+              done: completedSet.has(sid),
+            };
+            return item;
           })
           .filter((x): x is TaskItem => x !== null);
 
         if (!alive) return;
         setTasks(next);
 
-        // Weekly leaderboard window starts at the day-1 anchor (tasks creation).
+        // Weekly leaderboard window starts at the day-1 anchor.
         const wStart = anchorDate;
         const wEnd = new Date(anchorMs + 7 * 86400000);
         const { data: weekRows } = await supabase
@@ -304,7 +413,6 @@ export default function CircleHome() {
             byUserDay[id] = arr;
           }
         }
-        // Convert per-day buckets to cumulative running totals.
         for (const id of Object.keys(byUserDay)) {
           const arr = byUserDay[id];
           for (let i = 1; i < arr.length; i++) arr[i] += arr[i - 1];
@@ -315,25 +423,25 @@ export default function CircleHome() {
         // Today's circle-wide activity feed.
         const { data: feedRows } = await supabase
           .from("task_completions")
-          .select("id, user_id, task_id, completed_at")
+          .select("id, user_id, category_id, subtask_id, completed_at")
           .eq("circle_id", circleId)
-          .gte("completed_at", dayStart.toISOString())
-          .lte("completed_at", dayEnd.toISOString())
+          .eq("completed_on", today)
           .order("completed_at", { ascending: false })
           .limit(20);
 
         type FeedRow = {
           id: string | number;
           user_id: string;
-          task_id: string;
+          category_id: string;
+          subtask_id: string;
           completed_at: string;
         };
         const feedList = (feedRows ?? []) as unknown as FeedRow[];
         const feedUserIds = feedList.map((r) => String(r.user_id));
-        const feedTaskIds = feedList.map((r) => String(r.task_id));
+        const feedCategoryIds = feedList.map((r) => String(r.category_id));
+        const feedSubtaskIds = feedList.map((r) => String(r.subtask_id));
 
         const allUserIds = Array.from(new Set([...userIds, ...feedUserIds]));
-        const allTaskIds = Array.from(new Set([...uniqueIds, ...feedTaskIds]));
 
         const nameById: Record<string, string> = {};
         if (allUserIds.length > 0) {
@@ -350,19 +458,49 @@ export default function CircleHome() {
           }
         }
 
-        if (allTaskIds.length > 0) {
-          const missing = allTaskIds.filter((id) => !titleById[id]);
-          if (missing.length > 0) {
-            const { data: extraRows } = await supabase
-              .from("tasks")
-              .select("id, title")
-              .in("id", missing);
-            if (extraRows) {
-              type T = { id: string; title: string };
-              for (const t of extraRows as unknown as T[]) {
-                const title = String(t.title ?? "").trim();
-                if (title) titleById[String(t.id)] = title;
-              }
+        // Resolve any feed subtask/category not already in our maps.
+        const missingSubtasks = Array.from(
+          new Set(feedSubtaskIds.filter((id) => id && !subtaskById[id])),
+        );
+        if (missingSubtasks.length > 0) {
+          const { data: extraSt } = await supabase
+            .from("category_subtasks")
+            .select("id, category_id, title, sort_order")
+            .in("id", missingSubtasks);
+          if (extraSt) {
+            type ST = {
+              id: string;
+              category_id: string;
+              title: string;
+              sort_order: number;
+            };
+            for (const s of extraSt as unknown as ST[]) {
+              const sid = String(s.id);
+              subtaskById[sid] = {
+                id: sid,
+                categoryId: String(s.category_id),
+                title: String(s.title ?? "").trim(),
+                sortOrder: Number(s.sort_order) || 0,
+              };
+            }
+          }
+        }
+        const missingCategories = Array.from(
+          new Set(feedCategoryIds.filter((id) => id && !categoryById[id])),
+        );
+        if (missingCategories.length > 0) {
+          const { data: extraCat } = await supabase
+            .from("categories")
+            .select("id, name, icon")
+            .in("id", missingCategories);
+          if (extraCat) {
+            type Cat = { id: string; name: string; icon: string };
+            for (const c of extraCat as unknown as Cat[]) {
+              categoryById[String(c.id)] = {
+                id: String(c.id),
+                name: String(c.name ?? ""),
+                icon: String(c.icon ?? ""),
+              };
             }
           }
         }
@@ -375,16 +513,21 @@ export default function CircleHome() {
           }))
           .sort((a, b) => b.points - a.points || a.name.localeCompare(b.name));
 
-        const activityList: ActivityRow[] = feedList.map((r) => ({
-          id: String(r.id),
-          userId: String(r.user_id),
-          name:
-            String(r.user_id) === uid
-              ? "You"
-              : (nameById[String(r.user_id)] ?? "Someone"),
-          taskTitle: titleById[String(r.task_id)] ?? "a task",
-          at: new Date(r.completed_at).getTime(),
-        }));
+        const activityList: ActivityRow[] = feedList.map((r) => {
+          const st = subtaskById[String(r.subtask_id)];
+          const cat = categoryById[String(r.category_id)];
+          return {
+            id: String(r.id),
+            userId: String(r.user_id),
+            name:
+              String(r.user_id) === uid
+                ? "You"
+                : (nameById[String(r.user_id)] ?? "Someone"),
+            subtaskTitle: st?.title ?? "a task",
+            categoryName: cat?.name ?? "",
+            at: new Date(r.completed_at).getTime(),
+          };
+        });
 
         if (!alive) return;
         setLeaderboard(list);
@@ -444,13 +587,25 @@ export default function CircleHome() {
       }
 
       const keys = Array.from(selected);
-      const rows = keys.map((taskId) => ({
-        circle_id: circleId,
-        user_id: uid,
-        task_id: taskId,
-        completed_at: new Date().toISOString(),
-        points: POINTS_PER_TASK,
-      }));
+      const today = todayDateString();
+      const nowIso = new Date().toISOString();
+      const rowsBySubtask = new Map<string, TaskItem>();
+      for (const t of tasks) rowsBySubtask.set(t.key, t);
+      const rows = keys
+        .map((subtaskId) => {
+          const t = rowsBySubtask.get(subtaskId);
+          if (!t) return null;
+          return {
+            circle_id: circleId,
+            user_id: uid,
+            category_id: t.categoryId,
+            subtask_id: subtaskId,
+            completed_at: nowIso,
+            completed_on: today,
+            points: POINTS_PER_TASK,
+          };
+        })
+        .filter((r): r is NonNullable<typeof r> => r !== null);
 
       const { error } = await supabase.from("task_completions").insert(rows);
       const insertErr = error as { code?: string; message?: string } | null;
@@ -549,8 +704,14 @@ export default function CircleHome() {
                   <View key={a.id} style={styles.chatBubble}>
                     <Text style={styles.chatLine} numberOfLines={2}>
                       <Text style={styles.chatName}>{a.name}</Text>
-                      {" finished "}
-                      <Text style={styles.chatTask}>{a.taskTitle}</Text>
+                      {" completed "}
+                      <Text style={styles.chatTask}>{a.subtaskTitle}</Text>
+                      {a.categoryName ? (
+                        <>
+                          {" in "}
+                          <Text style={styles.chatTask}>{a.categoryName}</Text>
+                        </>
+                      ) : null}
                     </Text>
                     <Text style={styles.chatTime}>{relativeTime(a.at)}</Text>
                   </View>
@@ -760,8 +921,14 @@ export default function CircleHome() {
                 <View key={a.id} style={styles.chatBubble}>
                   <Text style={styles.chatLine}>
                     <Text style={styles.chatName}>{a.name}</Text>
-                    {" finished "}
-                    <Text style={styles.chatTask}>{a.taskTitle}</Text>
+                    {" completed "}
+                    <Text style={styles.chatTask}>{a.subtaskTitle}</Text>
+                    {a.categoryName ? (
+                      <>
+                        {" in "}
+                        <Text style={styles.chatTask}>{a.categoryName}</Text>
+                      </>
+                    ) : null}
                   </Text>
                   <Text style={styles.chatTime}>{relativeTime(a.at)}</Text>
                 </View>
