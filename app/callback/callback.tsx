@@ -22,6 +22,37 @@ export default function AuthCallback() {
 
       const access_token = (params?.access_token as string) ?? "";
       const refresh_token = (params?.refresh_token as string) ?? "";
+      const code = (params?.code as string) ?? "";
+
+      if (code) {
+        const { data: exchangeData, error: exchangeError } =
+          await supabase.auth.exchangeCodeForSession(code);
+
+        if (exchangeError) {
+          alert(exchangeError.message);
+          router.replace("/create-account");
+          return;
+        }
+
+        const userId = exchangeData?.user?.id;
+        if (!userId) {
+          router.replace("/create-account");
+          return;
+        }
+
+        const { data: profileRow } = await supabase
+          .from("profiles")
+          .select("questionnaire_completed")
+          .eq("id", userId)
+          .maybeSingle();
+
+        const completed =
+          (profileRow as { questionnaire_completed?: boolean } | null)
+            ?.questionnaire_completed === true;
+
+        router.replace(completed ? "/user-home" : "/questionnaire");
+        return;
+      }
 
       if (!access_token) {
         alert("Missing access token from OAuth redirect.");
