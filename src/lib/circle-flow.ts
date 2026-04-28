@@ -50,6 +50,37 @@ interface UpdatedCircleRow {
   stage?: string | null;
 }
 
+const circleSelectionSyncs = new Map<string, Promise<void>>();
+
+function sameCategorySelection(
+  left: string[],
+  right: string[],
+): boolean {
+  if (left.length !== right.length) return false;
+  const sortedLeft = [...left].sort();
+  const sortedRight = [...right].sort();
+  return sortedLeft.every((value, index) => value === sortedRight[index]);
+}
+
+async function runCircleSelectionSync(
+  circleId: string,
+  userId: string,
+  work: () => Promise<void>,
+): Promise<void> {
+  const key = `${circleId}:${userId}`;
+  const existing = circleSelectionSyncs.get(key);
+  if (existing) return existing;
+
+  const next = work().finally(() => {
+    if (circleSelectionSyncs.get(key) === next) {
+      circleSelectionSyncs.delete(key);
+    }
+  });
+
+  circleSelectionSyncs.set(key, next);
+  return next;
+}
+
 function rowsToResponses(
   rows: QuestionnaireResponseRow[],
 ): Record<string, string[]> {
@@ -180,12 +211,15 @@ async function persistCircleSelectionsForUser(
 ): Promise<void> {
   const { data: existingRows } = await supabase
     .from("circle_member_category_selections")
-    .select("assigned_by")
+    .select("assigned_by, category_id")
     .eq("circle_id", circleId)
     .eq("user_id", userId);
 
   const hasAlgorithmAssignments = (existingRows ?? []).some((row) => {
-    const typed = row as { assigned_by?: string | null };
+    const typed = row as {
+      assigned_by?: string | null;
+      category_id?: string | null;
+    };
     return typed.assigned_by === "algorithm";
   });
   if (hasAlgorithmAssignments) return;
@@ -202,6 +236,33 @@ async function persistCircleSelectionsForUser(
 
   if (categoryIds.length < 3) {
     throw new Error("We need 3 confirmed categories before joining a circle.");
+  }
+
+  const existingCategoryIds = Array.from(
+    new Set(
+      (existingRows ?? [])
+        .map((row) => {
+          const typed = row as {
+            assigned_by?: string | null;
+            category_id?: string | null;
+          };
+          return typed.assigned_by === "algorithm"
+            ? ""
+            : String(typed.category_id ?? "").trim();
+        })
+        .filter((value) => value.length > 0),
+    ),
+  );
+
+  if (sameCategorySelection(existingCategoryIds, categoryIds)) {
+    const { error: memberErr } = await supabase
+      .from("circle_members")
+      .update({ categories_selected: true })
+      .eq("circle_id", circleId)
+      .eq("user_id", userId);
+
+    if (memberErr) throw new Error(memberErr.message);
+    return;
   }
 
   const { error: deleteErr } = await supabase
@@ -253,7 +314,9 @@ export async function syncCircleSelectionsForCurrentUser(
   );
   if (stage !== "lobby") return;
 
-  await persistCircleSelectionsForUser(circleId, userId);
+  await runCircleSelectionSync(circleId, userId, () =>
+    persistCircleSelectionsForUser(circleId, userId),
+  );
 }
 
 export async function forceSyncCircleSelectionsForCurrentUser(
@@ -263,7 +326,9 @@ export async function forceSyncCircleSelectionsForCurrentUser(
   const userId = userData.user?.id;
   if (!userId) throw new Error("You need to be logged in to continue.");
 
-  await persistCircleSelectionsForUser(circleId, userId);
+  await runCircleSelectionSync(circleId, userId, () =>
+    persistCircleSelectionsForUser(circleId, userId),
+  );
 }
 
 export async function backfillMissingCircleSelectionsFromQuestionnaire(

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   Easing,
   Pressable,
@@ -154,8 +155,15 @@ export default function CreateCircle() {
 
     try {
       await syncCircleSelectionsForCurrentUser(circleId);
-    } catch {
-      // If selections are already in place we still want the circle to open.
+    } catch (error) {
+      if (stage === "lobby") {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Could not load your category picks.";
+        Alert.alert("Open circle failed", message);
+        return;
+      }
     }
 
     if (stage === "active") {

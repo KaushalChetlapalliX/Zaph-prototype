@@ -177,14 +177,6 @@ export default function CircleMembersScreen() {
   useEffect(() => {
     if (!circleId) return;
 
-    void syncCircleSelectionsForCurrentUser(circleId).catch(() => {
-      // Existing members may already be synced for this circle.
-    });
-  }, [circleId]);
-
-  useEffect(() => {
-    if (!circleId) return;
-
     let alive = true;
 
     const resolveAdmin = async () => {
