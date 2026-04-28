@@ -79,7 +79,7 @@ export async function loadSuggestedCategoriesForUser(
     );
     if (cached) {
       const parsed = JSON.parse(cached) as SuggestedCategory[];
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      if (Array.isArray(parsed) && parsed.length >= 3) return parsed;
     }
   } catch {
     // ignore stale cache
@@ -101,13 +101,15 @@ export async function loadSuggestedCategoriesForUser(
   const { data: categoryRows, error: categoryErr } = await supabase
     .from("categories")
     .select("id, name, icon, description")
-    .in("name", topNames);
+    .eq("is_active", true)
+    .order("sort_order", { ascending: true });
 
   if (categoryErr || !categoryRows) {
     throw new Error(categoryErr?.message ?? "Could not load categories.");
   }
 
   const categoryList = categoryRows as CategoryRow[];
+  const categoryByName = new Map(categoryList.map((row) => [row.name, row]));
   const questionnaire = toQuestionnaireShape(responses);
 
   const { data: profileRow } = await supabase
@@ -127,9 +129,16 @@ export async function loadSuggestedCategoriesForUser(
         );
   const motivationTier = computeMotivationTierFromScore(motivationScore);
 
-  const suggestions = topNames
+  const orderedNames = [
+    ...topNames,
+    ...categoryList
+      .map((row) => row.name)
+      .filter((name) => !topNames.includes(name)),
+  ];
+
+  const suggestions = orderedNames
     .map((name) => {
-      const category = categoryList.find((row) => row.name === name);
+      const category = categoryByName.get(name);
       if (!category) return null;
       return {
         description: category.description,
@@ -144,7 +153,8 @@ export async function loadSuggestedCategoriesForUser(
         ),
       };
     })
-    .filter((value): value is SuggestedCategory => value !== null);
+    .filter((value): value is SuggestedCategory => value !== null)
+    .slice(0, 3);
 
   await AsyncStorage.setItem(
     STORAGE_KEYS.MOTIVATION_TIER,

@@ -81,10 +81,17 @@ export function getTopCategories(
   scores: Record<string, number>,
   count = 3,
 ): string[] {
-  return Object.entries(scores)
+  const ranked = Object.entries(scores)
     .sort((a, b) => b[1] - a[1])
-    .slice(0, count)
     .map(([name]) => name);
+
+  const fallbackOrder = Object.values(CATEGORY_NAMES);
+  for (const name of fallbackOrder) {
+    if (ranked.includes(name)) continue;
+    ranked.push(name);
+  }
+
+  return ranked.slice(0, count);
 }
 
 const SUBTASK_PREFERENCES: Record<string, Record<string, string[]>> = {

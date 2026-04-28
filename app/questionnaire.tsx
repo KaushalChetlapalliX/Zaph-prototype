@@ -208,7 +208,8 @@ export default function QuestionnaireScreen() {
     const { data: catRows } = await supabase
       .from("categories")
       .select("id, name, icon, description")
-      .in("name", topNames);
+      .eq("is_active", true)
+      .order("sort_order", { ascending: true });
 
     type CatRow = {
       id: string;
@@ -217,11 +218,16 @@ export default function QuestionnaireScreen() {
       description: string;
     };
     const catList = (catRows ?? []) as unknown as CatRow[];
+    const categoryByName = new Map(catList.map((row) => [row.name, row]));
 
     const drill = (responses.drill_down as string | undefined) ?? null;
-    const suggestions: SuggestedCategory[] = topNames
+    const orderedNames = [
+      ...topNames,
+      ...catList.map((row) => row.name).filter((name) => !topNames.includes(name)),
+    ];
+    const suggestions: SuggestedCategory[] = orderedNames
       .map((name) => {
-        const c = catList.find((row) => row.name === name);
+        const c = categoryByName.get(name);
         if (!c) return null;
         return {
           id: c.id,
@@ -232,7 +238,8 @@ export default function QuestionnaireScreen() {
           suggestedSubtasks: getSuggestedSubtasks(name, drill, tier),
         };
       })
-      .filter((x): x is SuggestedCategory => x !== null);
+      .filter((x): x is SuggestedCategory => x !== null)
+      .slice(0, 3);
 
     await AsyncStorage.setItem(STORAGE_KEYS.MOTIVATION_TIER, tier);
     await AsyncStorage.setItem(
