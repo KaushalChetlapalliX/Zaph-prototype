@@ -233,9 +233,159 @@ export async function syncCircleSelectionsForCurrentUser(
   if (memberErr) throw new Error(memberErr.message);
 }
 
+export async function backfillMissingCircleSelectionsFromQuestionnaire(
+  circleId: string,
+): Promise<number> {
+  const { data: memberRows, error: memberErr } = await supabase
+    .from("circle_members")
+    .select("user_id")
+    .eq("circle_id", circleId);
+
+  if (memberErr || !memberRows || memberRows.length === 0) {
+    throw new Error(memberErr?.message ?? "No members found for this circle.");
+  }
+
+  const members = memberRows as CircleMemberRow[];
+  const userIds = members.map((member) => member.user_id);
+
+  const { data: selectionRows, error: selectionErr } = await supabase
+    .from("circle_member_category_selections")
+    .select("user_id, category_id, categories(id, name)")
+    .eq("circle_id", circleId)
+    .in("user_id", userIds);
+
+  if (selectionErr || !selectionRows) {
+    throw new Error(selectionErr?.message ?? "Could not load category picks.");
+  }
+
+  const selectionNamesByUser: Record<string, { id: string; name: string }[]> =
+    {};
+  for (const selection of selectionRows as SelectionRow[]) {
+    const category = Array.isArray(selection.categories)
+      ? selection.categories[0]
+      : selection.categories;
+    if (!category) continue;
+    if (!selectionNamesByUser[selection.user_id]) {
+      selectionNamesByUser[selection.user_id] = [];
+    }
+    selectionNamesByUser[selection.user_id].push({
+      id: category.id,
+      name: category.name,
+    });
+  }
+
+  const missingMembers = members.filter(
+    (member) => (selectionNamesByUser[member.user_id] ?? []).length < 3,
+  );
+  if (missingMembers.length === 0) return 0;
+
+  const { data: responseRows, error: responseErr } = await supabase
+    .from("user_questionnaire_responses")
+    .select("user_id, question_key, answer_value")
+    .in(
+      "user_id",
+      missingMembers.map((member) => member.user_id),
+    );
+
+  if (responseErr || !responseRows) {
+    throw new Error(
+      responseErr?.message ?? "Could not load questionnaire responses.",
+    );
+  }
+
+  const responseRowsByUser: Record<string, QuestionnaireResponseRow[]> = {};
+  for (const row of responseRows as Array<
+    QuestionnaireResponseRow & { user_id: string }
+  >) {
+    if (!responseRowsByUser[row.user_id]) responseRowsByUser[row.user_id] = [];
+    responseRowsByUser[row.user_id].push({
+      answer_value: row.answer_value,
+      question_key: row.question_key,
+    });
+  }
+
+  const namesToLookup = new Set<string>();
+  const topNamesByUser: Record<string, string[]> = {};
+  for (const member of missingMembers) {
+    const responseMap = rowsToResponses(
+      responseRowsByUser[member.user_id] ?? [],
+    );
+    const scoreMap = computeCategoryScores(responseMap);
+    const topNames = getTopCategories(scoreMap, 3);
+    topNamesByUser[member.user_id] = topNames;
+    for (const name of topNames) namesToLookup.add(name);
+  }
+
+  if (namesToLookup.size === 0) return 0;
+
+  const { data: catRows, error: catErr } = await supabase
+    .from("categories")
+    .select("id, name")
+    .in("name", Array.from(namesToLookup));
+
+  if (catErr || !catRows) {
+    throw new Error(catErr?.message ?? "Could not load categories.");
+  }
+
+  const catByName: Record<string, { id: string; name: string }> = {};
+  for (const row of catRows as Array<{ id: string; name: string }>) {
+    catByName[row.name] = row;
+  }
+
+  let backfilledCount = 0;
+
+  for (const member of missingMembers) {
+    const categoryIds = Array.from(
+      new Set(
+        (topNamesByUser[member.user_id] ?? [])
+          .map((name) => catByName[name]?.id ?? "")
+          .filter((value) => value.trim().length > 0),
+      ),
+    ).slice(0, 3);
+
+    if (categoryIds.length < 3) continue;
+
+    const { error: deleteErr } = await supabase
+      .from("circle_member_category_selections")
+      .delete()
+      .eq("circle_id", circleId)
+      .eq("user_id", member.user_id);
+
+    if (deleteErr) throw new Error(deleteErr.message);
+
+    const { error: insertErr } = await supabase
+      .from("circle_member_category_selections")
+      .insert(
+        categoryIds.map((categoryId) => ({
+          assigned_by: "user",
+          category_id: categoryId,
+          circle_id: circleId,
+          is_common: false,
+          user_id: member.user_id,
+        })),
+      );
+
+    if (insertErr) throw new Error(insertErr.message);
+
+    const { error: memberUpdateErr } = await supabase
+      .from("circle_members")
+      .update({ categories_selected: true })
+      .eq("circle_id", circleId)
+      .eq("user_id", member.user_id);
+
+    if (memberUpdateErr) throw new Error(memberUpdateErr.message);
+
+    backfilledCount += 1;
+  }
+
+  return backfilledCount;
+}
+
 export async function assignCircleCategoriesFromQuestionnaire(
   circleId: string,
 ): Promise<number> {
+  await backfillMissingCircleSelectionsFromQuestionnaire(circleId);
+
   const { data: memberRows, error: memberErr } = await supabase
     .from("circle_members")
     .select("user_id")
@@ -300,56 +450,6 @@ export async function assignCircleCategoriesFromQuestionnaire(
       answer_value: row.answer_value,
       question_key: row.question_key,
     });
-  }
-
-  // Backfill any member missing selections by deriving top categories from
-  // their questionnaire responses. Handles the race where a member navigated
-  // past the lobby before syncCircleSelectionsForCurrentUser finished.
-  const membersMissingSelections = members.filter(
-    (m) => (selectionNamesByUser[m.user_id] ?? []).length < 3,
-  );
-  if (membersMissingSelections.length > 0) {
-    const namesToLookup = new Set<string>();
-    const topNamesByUser: Record<string, string[]> = {};
-    for (const member of membersMissingSelections) {
-      const responseMap = rowsToResponses(
-        responseRowsByUser[member.user_id] ?? [],
-      );
-      const scoreMap = computeCategoryScores(responseMap);
-      const topNames = getTopCategories(scoreMap, 3);
-      topNamesByUser[member.user_id] = topNames;
-      for (const name of topNames) namesToLookup.add(name);
-    }
-
-    if (namesToLookup.size > 0) {
-      const { data: catRows } = await supabase
-        .from("categories")
-        .select("id, name")
-        .in("name", Array.from(namesToLookup));
-
-      const catByName: Record<string, { id: string; name: string }> = {};
-      for (const row of (catRows ?? []) as Array<{
-        id: string;
-        name: string;
-      }>) {
-        catByName[row.name] = row;
-      }
-
-      for (const member of membersMissingSelections) {
-        const existing = selectionNamesByUser[member.user_id] ?? [];
-        const existingIds = new Set(existing.map((c) => c.id));
-        const filled = [...existing];
-        for (const name of topNamesByUser[member.user_id] ?? []) {
-          const cat = catByName[name];
-          if (cat && !existingIds.has(cat.id)) {
-            filled.push(cat);
-            existingIds.add(cat.id);
-          }
-          if (filled.length >= 3) break;
-        }
-        selectionNamesByUser[member.user_id] = filled;
-      }
-    }
   }
 
   const combinedScores: Record<string, number> = {};

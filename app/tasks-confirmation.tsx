@@ -16,7 +16,10 @@ import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "../src/lib/supabase";
 import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
-import { assignCircleCategoriesFromQuestionnaire } from "../src/lib/circle-flow";
+import {
+  assignCircleCategoriesFromQuestionnaire,
+  backfillMissingCircleSelectionsFromQuestionnaire,
+} from "../src/lib/circle-flow";
 
 type CategoryMini = {
   id: string;
@@ -81,6 +84,7 @@ export default function TasksConfirmationScreen() {
   const initialLoadedRef = useRef(false);
   const groupsSigRef = useRef<string>("");
   const navigatedRef = useRef(false);
+  const healedMissingRef = useRef(false);
 
   const mountAnim = useRef(new Animated.Value(0)).current;
   const pulseAnim = useRef(new Animated.Value(0)).current;
@@ -254,6 +258,32 @@ export default function TasksConfirmationScreen() {
           categories: cats,
         };
       });
+
+      const hasMissingCategories = nextGroups.some(
+        (group) => group.categories.length === 0,
+      );
+
+      if (
+        hasMissingCategories &&
+        !anyAssigned &&
+        !healedMissingRef.current
+      ) {
+        healedMissingRef.current = true;
+        try {
+          const repairedCount =
+            await backfillMissingCircleSelectionsFromQuestionnaire(circleId);
+          if (!alive) return;
+          if (repairedCount > 0) {
+            await fetchGroups();
+            return;
+          }
+        } catch (repairError) {
+          console.error(
+            "[tasks-confirmation] backfill missing selections:",
+            repairError,
+          );
+        }
+      }
 
       const sig = nextGroups
         .map(
