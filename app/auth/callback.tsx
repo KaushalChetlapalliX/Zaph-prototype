@@ -45,6 +45,20 @@ function readAuthParams(rawUrl: string): Record<string, string> {
 export default function AuthCallback() {
   useEffect(() => {
     const run = async () => {
+      const routeForSession = async (userId: string) => {
+        const { data: profileRow } = await supabase
+          .from("profiles")
+          .select("questionnaire_completed")
+          .eq("id", userId)
+          .maybeSingle();
+
+        const completed =
+          (profileRow as { questionnaire_completed?: boolean } | null)
+            ?.questionnaire_completed === true;
+
+        router.replace(completed ? "/user-home" : "/questionnaire");
+      };
+
       const callbackUrl =
         Platform.OS === "web" && typeof window !== "undefined"
           ? window.location.href
@@ -103,6 +117,26 @@ export default function AuthCallback() {
           return;
         }
       } else {
+        const { data: existingSession, error: existingSessionError } =
+          await supabase.auth.getSession();
+
+        if (existingSessionError) {
+          console.log(
+            "[google-oauth] existing session check error:",
+            existingSessionError.message,
+          );
+        }
+
+        const existingUserId = existingSession.session?.user?.id;
+        if (existingUserId) {
+          console.log(
+            "[google-oauth] reusing existing session after callback without params:",
+            existingUserId,
+          );
+          await routeForSession(existingUserId);
+          return;
+        }
+
         console.log(
           "[google-oauth] missing OAuth params:",
           callbackUrl,
@@ -134,17 +168,7 @@ export default function AuthCallback() {
         return;
       }
 
-      const { data: profileRow } = await supabase
-        .from("profiles")
-        .select("questionnaire_completed")
-        .eq("id", userId)
-        .maybeSingle();
-
-      const completed =
-        (profileRow as { questionnaire_completed?: boolean } | null)
-          ?.questionnaire_completed === true;
-
-      router.replace(completed ? "/user-home" : "/questionnaire");
+      await routeForSession(userId);
     };
 
     void run();
