@@ -8,29 +8,30 @@ import {
 } from "react-native";
 import { router } from "expo-router";
 import * as Linking from "expo-linking";
-import * as QueryParams from "expo-auth-session/build/QueryParams";
 import { supabase } from "../../src/lib/supabase";
 import { Colors, Spacing, Typography } from "../../src/constants/design";
 
 function readAuthParams(rawUrl: string): Record<string, string> {
   const parsed: Record<string, string> = {};
 
-  const assignFromPart = (part: string | undefined) => {
+  const assignFromPart = (part?: string) => {
     if (!part) return;
     const search = new URLSearchParams(part);
     for (const [key, value] of search.entries()) {
-      parsed[key] = value;
+      if (value !== undefined && value !== "") {
+        parsed[key] = value;
+      }
     }
   };
 
-  const queryIndex = rawUrl.indexOf("?");
+  const questionIndex = rawUrl.indexOf("?");
   const hashIndex = rawUrl.indexOf("#");
 
-  if (queryIndex >= 0) {
+  if (questionIndex >= 0) {
     const queryPart =
-      hashIndex > queryIndex
-        ? rawUrl.slice(queryIndex + 1, hashIndex)
-        : rawUrl.slice(queryIndex + 1);
+      hashIndex >= 0 && hashIndex > questionIndex
+        ? rawUrl.slice(questionIndex + 1, hashIndex)
+        : rawUrl.slice(questionIndex + 1);
     assignFromPart(queryPart);
   }
 
@@ -57,37 +58,57 @@ export default function AuthCallback() {
         return;
       }
 
-      const { params, errorCode } = QueryParams.getQueryParams(callbackUrl);
-      const parsedParams = {
-        ...readAuthParams(callbackUrl),
-        ...(params as Record<string, string | undefined> | undefined),
-      };
+      const authParams = readAuthParams(callbackUrl);
+      const access_token = authParams.access_token;
+      const refresh_token = authParams.refresh_token;
+      const code = authParams.code;
+      const error = authParams.error;
+      const error_description = authParams.error_description;
 
-      console.log("[google-oauth] parsed callback params:", parsedParams);
+      console.log("[google-oauth] parsed callback params:", authParams);
 
-      if (errorCode) {
-        console.log("[google-oauth] callback errorCode:", errorCode);
-        alert(errorCode);
+      if (error) {
+        console.log("[google-oauth] callback error:", error, error_description);
+        alert(error_description || error);
         router.replace("/create-account");
         return;
       }
 
-      const code = parsedParams.code ?? "";
-      if (!code) {
-        alert("Missing OAuth code from redirect.");
-        router.replace("/create-account");
-        return;
-      }
+      if (code) {
+        const { error: exchangeError } =
+          await supabase.auth.exchangeCodeForSession(code);
 
-      const { error: exchangeError } =
-        await supabase.auth.exchangeCodeForSession(code);
+        if (exchangeError) {
+          console.log(
+            "[google-oauth] exchangeCodeForSession error:",
+            exchangeError.message,
+          );
+          alert(exchangeError.message);
+          router.replace("/create-account");
+          return;
+        }
+      } else if (access_token && refresh_token) {
+        const { error: setSessionError } = await supabase.auth.setSession({
+          access_token,
+          refresh_token,
+        });
 
-      if (exchangeError) {
+        if (setSessionError) {
+          console.log(
+            "[google-oauth] setSession error:",
+            setSessionError.message,
+          );
+          alert(setSessionError.message);
+          router.replace("/create-account");
+          return;
+        }
+      } else {
         console.log(
-          "[google-oauth] exchangeCodeForSession error:",
-          exchangeError.message,
+          "[google-oauth] missing OAuth params:",
+          callbackUrl,
+          authParams,
         );
-        alert(exchangeError.message);
+        alert("Missing OAuth credentials from redirect.");
         router.replace("/create-account");
         return;
       }
@@ -104,7 +125,11 @@ export default function AuthCallback() {
 
       const userId = sessionData.session?.user?.id;
       if (!userId) {
-        alert("Session missing after OAuth exchange.");
+        console.log(
+          "[google-oauth] session missing after callback handling:",
+          authParams,
+        );
+        alert("Session missing after OAuth callback.");
         router.replace("/create-account");
         return;
       }
