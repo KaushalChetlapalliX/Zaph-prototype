@@ -15,6 +15,7 @@ import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Svg, { Circle as SvgCircle } from "react-native-svg";
 import { supabase } from "../src/lib/supabase";
+import { buildAssignedCategoryLookup } from "../src/lib/categories";
 import { TabBar } from "../src/components/TabBar";
 import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
 import { taskCountForAssignedCategory } from "../src/lib/circle-flow";
@@ -312,19 +313,48 @@ export default function UserHome() {
           new Set(selList.map((s) => String(s.category_id))),
         );
 
-        const categoryById: Record<string, { name: string; icon: string }> = {};
+        const categoryById: Record<
+          string,
+          { icon: string; name: string; sourceIds: string[] }
+        > = {};
         if (categoryIds.length > 0) {
           const { data: catRows, error: catErr } = await supabase
             .from("categories")
-            .select("id, name, icon")
+            .select("id, name, icon, description")
             .in("id", categoryIds);
           if (catErr) throw new Error(catErr.message);
           if (catRows) {
-            type CatRow = { id: string; name: string; icon: string };
-            for (const c of catRows as unknown as CatRow[]) {
-              categoryById[String(c.id)] = {
-                name: String(c.name ?? "").trim() || "Category",
-                icon: "",
+            type CatRow = {
+              description?: string | null;
+              icon?: string | null;
+              id: string;
+              name: string;
+            };
+            const assignedCategories = catRows as unknown as CatRow[];
+            const categoryNames = Array.from(
+              new Set(
+                assignedCategories
+                  .map((category) => String(category.name ?? "").trim())
+                  .filter((name) => name.length > 0),
+              ),
+            );
+
+            const { data: dupCatRows, error: dupCatErr } = await supabase
+              .from("categories")
+              .select("id, name, icon, description")
+              .in("name", categoryNames);
+
+            if (dupCatErr) throw new Error(dupCatErr.message);
+
+            const resolved = buildAssignedCategoryLookup(
+              assignedCategories,
+              (dupCatRows ?? assignedCategories) as CatRow[],
+            );
+            for (const [assignedId, category] of Object.entries(resolved)) {
+              categoryById[assignedId] = {
+                icon: category.icon,
+                name: category.name,
+                sourceIds: category.sourceIds,
               };
             }
           }
@@ -347,11 +377,16 @@ export default function UserHome() {
           sort_order: number;
         };
         let subtasks: SubtaskRow[] = [];
-        if (categoryIds.length > 0) {
+        const subtaskCategoryIds = Array.from(
+          new Set(
+            Object.values(categoryById).flatMap((category) => category.sourceIds),
+          ),
+        );
+        if (subtaskCategoryIds.length > 0) {
           const { data: stRows, error: stErr } = await supabase
             .from("category_subtasks")
             .select("id, category_id, title, sort_order")
-            .in("category_id", categoryIds)
+            .in("category_id", subtaskCategoryIds)
             .order("sort_order", { ascending: true });
           if (stErr) throw new Error(stErr.message);
           if (stRows) subtasks = stRows as unknown as SubtaskRow[];
@@ -389,7 +424,18 @@ export default function UserHome() {
           const categoryId = String(sel.category_id);
           const cat = categoryById[categoryId];
           if (!cat) continue;
-          const sts = subtasksByCategory[categoryId] ?? [];
+          const sts: SubtaskRow[] = [];
+          const seenTitles = new Set<string>();
+          for (const sourceId of cat.sourceIds) {
+            for (const st of subtasksByCategory[sourceId] ?? []) {
+              const titleKey = String(st.title ?? "")
+                .trim()
+                .toLowerCase();
+              if (!titleKey || seenTitles.has(titleKey)) continue;
+              seenTitles.add(titleKey);
+              sts.push(st);
+            }
+          }
 
           const dailyCount =
             dailyTaskCountByCircle[circleId] ?? DEFAULT_DAILY_TASK_COUNT;
@@ -425,7 +471,7 @@ export default function UserHome() {
               key,
               circleId,
               circleName: circleNameById[circleId] ?? "Circle",
-              categoryId,
+              categoryId: String(st.category_id),
               categoryName: cat.name,
               categoryIcon: cat.icon,
               subtaskId,

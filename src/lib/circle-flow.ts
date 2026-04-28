@@ -1,5 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { STORAGE_KEYS } from "../constants/storage";
+import { buildCanonicalCategoryMap } from "./categories";
 import { supabase } from "./supabase";
 import {
   computeCategoryScores,
@@ -21,8 +22,8 @@ interface QuestionnaireResponseRow {
 }
 
 interface CategoryRow {
-  description: string;
-  icon: string;
+  description?: string | null;
+  icon?: string | null;
   id: string;
   name: string;
 }
@@ -146,7 +147,7 @@ export async function loadSuggestedCategoriesForUser(
   }
 
   const categoryList = categoryRows as CategoryRow[];
-  const categoryByName = new Map(categoryList.map((row) => [row.name, row]));
+  const categoryByName = buildCanonicalCategoryMap(categoryList);
   const questionnaire = toQuestionnaireShape(responses);
 
   const { data: profileRow } = await supabase
@@ -425,10 +426,12 @@ export async function backfillMissingCircleSelectionsFromQuestionnaire(
     throw new Error(catErr?.message ?? "Could not load categories.");
   }
 
-  const catByName: Record<string, { id: string; name: string }> = {};
-  for (const row of catRows as Array<{ id: string; name: string }>) {
-    catByName[row.name] = row;
-  }
+  const catByName = buildCanonicalCategoryMap(
+    (catRows as Array<{ id: string; name: string }>).map((row) => ({
+      id: row.id,
+      name: row.name,
+    })),
+  );
 
   let backfilledCount = 0;
 
@@ -436,7 +439,7 @@ export async function backfillMissingCircleSelectionsFromQuestionnaire(
     const categoryIds = Array.from(
       new Set(
         (topNamesByUser[member.user_id] ?? [])
-          .map((name) => catByName[name]?.id ?? "")
+          .map((name) => catByName.get(name)?.id ?? "")
           .filter((value) => value.trim().length > 0),
       ),
     ).slice(0, 3);

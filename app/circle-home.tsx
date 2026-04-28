@@ -16,6 +16,7 @@ import { useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "../src/lib/supabase";
+import { buildAssignedCategoryLookup } from "../src/lib/categories";
 import { TabBar } from "../src/components/TabBar";
 import {
   LeaderboardWidget,
@@ -233,7 +234,12 @@ export default function CircleHome() {
         if (!alive) return;
         if (selErr) throw new Error(selErr.message);
 
-        type CategoryMini = { id: string; icon: string; name: string };
+        type CategoryMini = {
+          icon: string;
+          id: string;
+          name: string;
+          sourceIds: string[];
+        };
         type SelRow = {
           category_id: string;
           is_common?: boolean | null;
@@ -247,18 +253,45 @@ export default function CircleHome() {
         if (myCategoryIds.length > 0) {
           const { data: catRows, error: catErr } = await supabase
             .from("categories")
-            .select("id, name, icon")
+            .select("id, name, icon, description")
             .in("id", myCategoryIds);
 
           if (!alive) return;
           if (catErr) throw new Error(catErr.message);
 
-          type CategoryRow = { id: string; icon?: string | null; name: string };
-          for (const category of (catRows ?? []) as CategoryRow[]) {
-            categoryById[String(category.id)] = {
-              id: String(category.id),
-              name: String(category.name ?? "").trim() || "Category",
-              icon: String(category.icon ?? ""),
+          type CategoryRow = {
+            description?: string | null;
+            icon?: string | null;
+            id: string;
+            name: string;
+          };
+          const assignedCategories = (catRows ?? []) as CategoryRow[];
+          const categoryNames = Array.from(
+            new Set(
+              assignedCategories
+                .map((category) => String(category.name ?? "").trim())
+                .filter((name) => name.length > 0),
+            ),
+          );
+
+          const { data: dupCatRows, error: dupCatErr } = await supabase
+            .from("categories")
+            .select("id, name, icon, description")
+            .in("name", categoryNames);
+
+          if (!alive) return;
+          if (dupCatErr) throw new Error(dupCatErr.message);
+
+          const resolved = buildAssignedCategoryLookup(
+            assignedCategories,
+            (dupCatRows ?? assignedCategories) as CategoryRow[],
+          );
+          for (const [assignedId, category] of Object.entries(resolved)) {
+            categoryById[assignedId] = {
+              icon: category.icon,
+              id: category.id,
+              name: category.name,
+              sourceIds: category.sourceIds,
             };
           }
         }
@@ -278,12 +311,18 @@ export default function CircleHome() {
           string,
           { id: string; categoryId: string; title: string; sortOrder: number }
         > = {};
+        const assignedCategoryIdBySubtaskId: Record<string, string> = {};
         const orderedSubtaskIds: string[] = [];
-        if (myCategoryIds.length > 0) {
+        const subtaskCategoryIds = Array.from(
+          new Set(
+            Object.values(categoryById).flatMap((category) => category.sourceIds),
+          ),
+        );
+        if (subtaskCategoryIds.length > 0) {
           const { data: stRows, error: stErr } = await supabase
             .from("category_subtasks")
             .select("id, category_id, title, sort_order")
-            .in("category_id", myCategoryIds)
+            .in("category_id", subtaskCategoryIds)
             .order("category_id", { ascending: true })
             .order("sort_order", { ascending: true });
 
@@ -322,7 +361,17 @@ export default function CircleHome() {
 
           for (const selection of selList) {
             const catId = String(selection.category_id);
-            const list = byCat[catId] ?? [];
+            const sourceIds = categoryById[catId]?.sourceIds ?? [catId];
+            const list: { id: string; title: string; sortOrder: number }[] = [];
+            const seenTitles = new Set<string>();
+            for (const sourceId of sourceIds) {
+              for (const item of byCat[sourceId] ?? []) {
+                const titleKey = item.title.toLowerCase();
+                if (seenTitles.has(titleKey)) continue;
+                seenTitles.add(titleKey);
+                list.push(item);
+              }
+            }
             const preferred = preferredTitlesByCat[catId];
             const perCategory = taskCountForAssignedCategory(
               dailyTaskCount,
@@ -337,6 +386,7 @@ export default function CircleHome() {
                 })
               : list;
             for (const item of sorted.slice(0, perCategory)) {
+              assignedCategoryIdBySubtaskId[item.id] = catId;
               orderedSubtaskIds.push(item.id);
             }
           }
@@ -363,12 +413,14 @@ export default function CircleHome() {
           .map((sid) => {
             const st = subtaskById[sid];
             if (!st) return null;
-            const cat = categoryById[st.categoryId];
+            const assignedCategoryId =
+              assignedCategoryIdBySubtaskId[sid] ?? st.categoryId;
+            const cat = categoryById[assignedCategoryId];
             if (!cat) return null;
             const item: TaskItem = {
               key: sid,
               subtaskId: sid,
-              categoryId: cat.id,
+              categoryId: st.categoryId,
               categoryName: cat.name,
               categoryIcon: cat.icon,
               title: st.title,
@@ -506,6 +558,7 @@ export default function CircleHome() {
                 id: String(c.id),
                 name: String(c.name ?? ""),
                 icon: String(c.icon ?? ""),
+                sourceIds: [String(c.id)],
               };
             }
           }

@@ -14,6 +14,7 @@ import { router, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "../src/lib/supabase";
+import { buildCanonicalCategoryMap } from "../src/lib/categories";
 import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
 import { STORAGE_KEYS } from "../src/constants/storage";
 import { tierLabel } from "../src/lib/questionnaire";
@@ -26,10 +27,10 @@ const ICON_CIRCLE = 48;
 const CARD_BORDER = 1;
 
 type Category = {
+  description: string;
   id: string;
   name: string;
   icon: string;
-  description: string;
 };
 
 export default function CategorySuggestionScreen() {
@@ -82,7 +83,13 @@ export default function CategorySuggestionScreen() {
         .select("id, name, icon, description")
         .eq("is_active", true)
         .order("sort_order", { ascending: true });
-      if (alive && data) setAllCategories(data as unknown as Category[]);
+      if (alive && data) {
+        setAllCategories(
+          Array.from(
+            buildCanonicalCategoryMap(data as unknown as Category[]).values(),
+          ),
+        );
+      }
     };
     load();
     return () => {
@@ -110,8 +117,8 @@ export default function CategorySuggestionScreen() {
           ? {
               id: cat.id,
               name: cat.name,
-              icon: cat.icon,
-              description: cat.description,
+              icon: String(cat.icon ?? ""),
+              description: String(cat.description ?? ""),
               score: drop.score,
               suggestedSubtasks: [],
             }

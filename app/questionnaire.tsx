@@ -17,6 +17,7 @@ import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "../src/lib/supabase";
+import { buildCanonicalCategoryMap } from "../src/lib/categories";
 import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
 import { STORAGE_KEYS } from "../src/constants/storage";
 import {
@@ -212,18 +213,20 @@ export default function QuestionnaireScreen() {
       .order("sort_order", { ascending: true });
 
     type CatRow = {
+      description?: string | null;
+      icon?: string | null;
       id: string;
       name: string;
-      icon: string;
-      description: string;
     };
     const catList = (catRows ?? []) as unknown as CatRow[];
-    const categoryByName = new Map(catList.map((row) => [row.name, row]));
+    const categoryByName = buildCanonicalCategoryMap(catList);
 
     const drill = (responses.drill_down as string | undefined) ?? null;
     const orderedNames = [
       ...topNames,
-      ...catList.map((row) => row.name).filter((name) => !topNames.includes(name)),
+      ...Array.from(categoryByName.keys()).filter(
+        (name) => !topNames.includes(name),
+      ),
     ];
     const suggestions: SuggestedCategory[] = orderedNames
       .map((name) => {
