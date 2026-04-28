@@ -53,74 +53,80 @@ export default function AuthCallback() {
         router.replace("/create-account");
         return;
       }
+      console.log("[google-oauth] received callback URL:", initialUrl);
 
       const { params, errorCode } = QueryParams.getQueryParams(initialUrl);
       const mergedParams = {
         ...readAuthParams(initialUrl),
         ...(params as Record<string, string | undefined> | undefined),
       };
+      console.log("[google-oauth] parsed callback params:", mergedParams);
 
       if (errorCode) {
+        console.log("[google-oauth] callback errorCode:", errorCode);
         alert(errorCode);
         router.replace("/create-account");
         return;
       }
 
-      const access_token = mergedParams.access_token ?? "";
-      const refresh_token = mergedParams.refresh_token ?? "";
       const code = mergedParams.code ?? "";
-
-      if (code) {
-        const { data: exchangeData, error: exchangeError } =
-          await supabase.auth.exchangeCodeForSession(code);
-
-        if (exchangeError) {
-          alert(exchangeError.message);
-          router.replace("/create-account");
-          return;
-        }
-
-        const userId = exchangeData?.user?.id;
-        if (!userId) {
-          router.replace("/create-account");
-          return;
-        }
-
-        const { data: profileRow } = await supabase
-          .from("profiles")
-          .select("questionnaire_completed")
-          .eq("id", userId)
-          .maybeSingle();
-
-        const completed =
-          (profileRow as { questionnaire_completed?: boolean } | null)
-            ?.questionnaire_completed === true;
-
-        router.replace(completed ? "/user-home" : "/questionnaire");
-        return;
-      }
-
-      if (!access_token) {
-        alert("Missing access token from OAuth redirect.");
+      if (!code) {
+        console.log(
+          "[google-oauth] callback missing PKCE code. Params:",
+          mergedParams,
+        );
+        alert("Missing OAuth code from redirect.");
         router.replace("/create-account");
         return;
       }
 
-      const { error } = await supabase.auth.setSession({
-        access_token,
-        refresh_token,
-      });
+      const { data: exchangeData, error: exchangeError } =
+        await supabase.auth.exchangeCodeForSession(code);
 
-      if (error) {
-        alert(error.message);
+      if (exchangeError) {
+        console.log(
+          "[google-oauth] exchangeCodeForSession error:",
+          exchangeError.message,
+        );
+        alert(exchangeError.message);
         router.replace("/create-account");
         return;
       }
 
-      router.replace("/create-circle");
+      const { data: sessionData, error: sessionError } =
+        await supabase.auth.getSession();
+      if (sessionError) {
+        console.log("[google-oauth] getSession error:", sessionError.message);
+        alert(sessionError.message);
+        router.replace("/create-account");
+        return;
+      }
+
+      const session = sessionData.session;
+      if (!session?.user?.id) {
+        console.log(
+          "[google-oauth] session missing after code exchange:",
+          exchangeData,
+        );
+        alert("Session missing after OAuth exchange.");
+        router.replace("/create-account");
+        return;
+      }
+
+      const { data: profileRow } = await supabase
+        .from("profiles")
+        .select("questionnaire_completed")
+        .eq("id", session.user.id)
+        .maybeSingle();
+
+      const completed =
+        (profileRow as { questionnaire_completed?: boolean } | null)
+          ?.questionnaire_completed === true;
+
+      router.replace(completed ? "/user-home" : "/questionnaire");
     };
 
-    run();
+    void run();
   }, []);
 
   return (

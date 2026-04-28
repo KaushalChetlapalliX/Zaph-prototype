@@ -21,8 +21,6 @@ import * as WebBrowser from "expo-web-browser";
 
 WebBrowser.maybeCompleteAuthSession();
 
-const WEB_GOOGLE_REDIRECT = "https://zaph.vercel.app/auth/callback";
-
 type ProfileUpsert = {
   id: string;
   username?: string | null;
@@ -30,6 +28,10 @@ type ProfileUpsert = {
   first_name?: string | null;
   last_name?: string | null;
 };
+
+function getOAuthRedirectTo() {
+  return Linking.createURL("/auth/callback");
+}
 
 export default function CreateAccount() {
   const [firstName, setFirstName] = useState("");
@@ -115,10 +117,8 @@ export default function CreateAccount() {
     if (loadingGoogle) return;
     setLoadingGoogle(true);
 
-    const redirectTo =
-      Platform.OS === "web"
-        ? WEB_GOOGLE_REDIRECT
-        : Linking.createURL("auth/callback");
+    const redirectTo = getOAuthRedirectTo();
+    console.log("[google-oauth] generated redirectTo:", redirectTo);
 
     if (Platform.OS === "web") {
       const { error } = await supabase.auth.signInWithOAuth({
@@ -130,6 +130,7 @@ export default function CreateAccount() {
 
       if (error) {
         setLoadingGoogle(false);
+        console.log("[google-oauth] web signInWithOAuth error:", error.message);
         Alert.alert("Google sign in failed", error.message);
       }
       return;
@@ -145,12 +146,14 @@ export default function CreateAccount() {
 
     if (error) {
       setLoadingGoogle(false);
+      console.log("[google-oauth] native signInWithOAuth error:", error.message);
       Alert.alert("Google sign in failed", error.message);
       return;
     }
 
     if (!data?.url) {
       setLoadingGoogle(false);
+      console.log("[google-oauth] native signInWithOAuth missing data.url");
       Alert.alert("Google sign in failed", "No OAuth URL returned.");
       return;
     }
@@ -159,6 +162,7 @@ export default function CreateAccount() {
 
     if (result.type !== "success" || !result.url) {
       setLoadingGoogle(false);
+      console.log("[google-oauth] native auth session result:", result.type);
       return;
     }
 
@@ -170,6 +174,7 @@ export default function CreateAccount() {
 
     if (!code) {
       setLoadingGoogle(false);
+      console.log("[google-oauth] native callback missing code:", result.url);
       Alert.alert(
         "Google sign in failed",
         "No code returned from Google redirect.",
@@ -182,7 +187,22 @@ export default function CreateAccount() {
 
     if (exchangeError) {
       setLoadingGoogle(false);
+      console.log(
+        "[google-oauth] native exchangeCodeForSession error:",
+        exchangeError.message,
+      );
       Alert.alert("Google sign in failed", exchangeError.message);
+      return;
+    }
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    if (!sessionData.session) {
+      setLoadingGoogle(false);
+      console.log("[google-oauth] native session missing after exchange");
+      Alert.alert(
+        "Google sign in failed",
+        "Session was not created after OAuth exchange.",
+      );
       return;
     }
 
