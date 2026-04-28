@@ -165,8 +165,8 @@ export function computeMotivationScoreLocal(
 export function computeMotivationTierFromScore(
   motivationScore: number,
 ): MotivationTier {
-  if (motivationScore <= 2.4) return "low";
-  if (motivationScore <= 3.4) return "medium";
+  if (motivationScore < 3.0) return "low";
+  if (motivationScore < 4.0) return "medium";
   return "high";
 }
 

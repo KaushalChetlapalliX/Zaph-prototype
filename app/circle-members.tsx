@@ -265,6 +265,16 @@ export default function CircleMembersScreen() {
 
     setStarting(true);
 
+    // Ensure the admin's picks are written to the DB before flipping stage.
+    // Once stage leaves "lobby", syncCircleSelectionsForCurrentUser becomes a no-op.
+    try {
+      await syncCircleSelectionsForCurrentUser(circleId);
+    } catch {
+      // Existing selections are fine; only a hard failure (e.g. missing
+      // questionnaire) reaches here, and assignCircleCategoriesFromQuestionnaire
+      // backfills missing rows on the next screen.
+    }
+
     const { error } = await supabase.rpc("set_circle_stage", {
       p_circle_id: circleId,
       p_stage: "selecting",

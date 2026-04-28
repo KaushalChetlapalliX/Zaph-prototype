@@ -28,7 +28,10 @@ interface CategoryRow {
 }
 
 interface SelectionRow {
-  categories: Pick<CategoryRow, "id" | "name"> | Pick<CategoryRow, "id" | "name">[] | null;
+  categories:
+    | Pick<CategoryRow, "id" | "name">
+    | Pick<CategoryRow, "id" | "name">[]
+    | null;
   category_id: string;
   user_id: string;
 }
@@ -71,7 +74,9 @@ export async function loadSuggestedCategoriesForUser(
   userId: string,
 ): Promise<SuggestedCategory[]> {
   try {
-    const cached = await AsyncStorage.getItem(STORAGE_KEYS.SUGGESTED_CATEGORIES);
+    const cached = await AsyncStorage.getItem(
+      STORAGE_KEYS.SUGGESTED_CATEGORIES,
+    );
     if (cached) {
       const parsed = JSON.parse(cached) as SuggestedCategory[];
       if (Array.isArray(parsed) && parsed.length > 0) return parsed;
@@ -166,7 +171,9 @@ export async function syncCircleSelectionsForCurrentUser(
     .eq("id", circleId)
     .maybeSingle();
 
-  const stage = String((circleRow as { stage?: string | null } | null)?.stage ?? "lobby");
+  const stage = String(
+    (circleRow as { stage?: string | null } | null)?.stage ?? "lobby",
+  );
   if (stage !== "lobby") return;
 
   const { data: existingRows } = await supabase
@@ -268,7 +275,8 @@ export async function assignCircleCategoriesFromQuestionnaire(
     .in("id", userIds);
 
   const selections = selectionRows as SelectionRow[];
-  const selectionNamesByUser: Record<string, { id: string; name: string }[]> = {};
+  const selectionNamesByUser: Record<string, { id: string; name: string }[]> =
+    {};
   for (const selection of selections) {
     const category = Array.isArray(selection.categories)
       ? selection.categories[0]
@@ -284,7 +292,9 @@ export async function assignCircleCategoriesFromQuestionnaire(
   }
 
   const responseRowsByUser: Record<string, QuestionnaireResponseRow[]> = {};
-  for (const row of responseRows as Array<QuestionnaireResponseRow & { user_id: string }>) {
+  for (const row of responseRows as Array<
+    QuestionnaireResponseRow & { user_id: string }
+  >) {
     if (!responseRowsByUser[row.user_id]) responseRowsByUser[row.user_id] = [];
     responseRowsByUser[row.user_id].push({
       answer_value: row.answer_value,
@@ -292,12 +302,64 @@ export async function assignCircleCategoriesFromQuestionnaire(
     });
   }
 
+  // Backfill any member missing selections by deriving top categories from
+  // their questionnaire responses. Handles the race where a member navigated
+  // past the lobby before syncCircleSelectionsForCurrentUser finished.
+  const membersMissingSelections = members.filter(
+    (m) => (selectionNamesByUser[m.user_id] ?? []).length < 3,
+  );
+  if (membersMissingSelections.length > 0) {
+    const namesToLookup = new Set<string>();
+    const topNamesByUser: Record<string, string[]> = {};
+    for (const member of membersMissingSelections) {
+      const responseMap = rowsToResponses(
+        responseRowsByUser[member.user_id] ?? [],
+      );
+      const scoreMap = computeCategoryScores(responseMap);
+      const topNames = getTopCategories(scoreMap, 3);
+      topNamesByUser[member.user_id] = topNames;
+      for (const name of topNames) namesToLookup.add(name);
+    }
+
+    if (namesToLookup.size > 0) {
+      const { data: catRows } = await supabase
+        .from("categories")
+        .select("id, name")
+        .in("name", Array.from(namesToLookup));
+
+      const catByName: Record<string, { id: string; name: string }> = {};
+      for (const row of (catRows ?? []) as Array<{
+        id: string;
+        name: string;
+      }>) {
+        catByName[row.name] = row;
+      }
+
+      for (const member of membersMissingSelections) {
+        const existing = selectionNamesByUser[member.user_id] ?? [];
+        const existingIds = new Set(existing.map((c) => c.id));
+        const filled = [...existing];
+        for (const name of topNamesByUser[member.user_id] ?? []) {
+          const cat = catByName[name];
+          if (cat && !existingIds.has(cat.id)) {
+            filled.push(cat);
+            existingIds.add(cat.id);
+          }
+          if (filled.length >= 3) break;
+        }
+        selectionNamesByUser[member.user_id] = filled;
+      }
+    }
+  }
+
   const combinedScores: Record<string, number> = {};
   const scoresByUserAndCategory: Record<string, Record<string, number>> = {};
 
   for (const member of members) {
     const selectedCategories = selectionNamesByUser[member.user_id] ?? [];
-    const responseMap = rowsToResponses(responseRowsByUser[member.user_id] ?? []);
+    const responseMap = rowsToResponses(
+      responseRowsByUser[member.user_id] ?? [],
+    );
     const scoreMap = computeCategoryScores(responseMap);
     scoresByUserAndCategory[member.user_id] = {};
 
@@ -357,7 +419,10 @@ export async function assignCircleCategoriesFromQuestionnaire(
   }
 
   const scoresByUser = new Map<string, number>();
-  for (const row of (profileRows ?? []) as Array<{ id: string; motivation_score?: number | null }>) {
+  for (const row of (profileRows ?? []) as Array<{
+    id: string;
+    motivation_score?: number | null;
+  }>) {
     if (typeof row.motivation_score === "number") {
       scoresByUser.set(row.id, row.motivation_score);
     }
@@ -365,7 +430,9 @@ export async function assignCircleCategoriesFromQuestionnaire(
 
   for (const member of members) {
     if (scoresByUser.has(member.user_id)) continue;
-    const responseMap = rowsToResponses(responseRowsByUser[member.user_id] ?? []);
+    const responseMap = rowsToResponses(
+      responseRowsByUser[member.user_id] ?? [],
+    );
     const questionnaire = toQuestionnaireShape(responseMap);
     scoresByUser.set(
       member.user_id,
