@@ -29,10 +29,6 @@ type ProfileUpsert = {
   last_name?: string | null;
 };
 
-function getOAuthRedirectTo() {
-  return Linking.createURL("/auth/callback");
-}
-
 export default function CreateAccount() {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -117,158 +113,30 @@ export default function CreateAccount() {
     if (loadingGoogle) return;
     setLoadingGoogle(true);
 
-    const redirectTo = getOAuthRedirectTo();
-    console.log("[google-oauth] generated redirectTo:", redirectTo);
-
-    if (Platform.OS === "web") {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-          redirectTo,
-        },
-      });
-
-      if (error) {
-        setLoadingGoogle(false);
-        console.log("[google-oauth] web signInWithOAuth error:", error.message);
-        Alert.alert("Google sign in failed", error.message);
-      }
-      return;
-    }
+    const redirectTo =
+      Platform.OS === "web" && typeof window !== "undefined"
+        ? `${window.location.origin}/auth/callback`
+        : Linking.createURL("/auth/callback");
+    console.log("OAuth redirectTo:", redirectTo);
 
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
         redirectTo,
-        skipBrowserRedirect: true,
+        skipBrowserRedirect: false,
       },
     });
 
     if (error) {
       setLoadingGoogle(false);
-      console.log("[google-oauth] native signInWithOAuth error:", error.message);
+      console.log("[google-oauth] signInWithOAuth error:", error.message);
       Alert.alert("Google sign in failed", error.message);
       return;
     }
 
-    if (!data?.url) {
-      setLoadingGoogle(false);
-      console.log("[google-oauth] native signInWithOAuth missing data.url");
-      Alert.alert("Google sign in failed", "No OAuth URL returned.");
-      return;
+    if (data?.url) {
+      console.log("[google-oauth] signInWithOAuth url:", data.url);
     }
-
-    const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
-
-    if (result.type !== "success" || !result.url) {
-      setLoadingGoogle(false);
-      console.log("[google-oauth] native auth session result:", result.type);
-      return;
-    }
-
-    const parsed = Linking.parse(result.url);
-    const code =
-      typeof parsed.queryParams?.code === "string"
-        ? parsed.queryParams.code
-        : undefined;
-
-    if (!code) {
-      setLoadingGoogle(false);
-      console.log("[google-oauth] native callback missing code:", result.url);
-      Alert.alert(
-        "Google sign in failed",
-        "No code returned from Google redirect.",
-      );
-      return;
-    }
-
-    const { data: exchangeData, error: exchangeError } =
-      await supabase.auth.exchangeCodeForSession(code);
-
-    if (exchangeError) {
-      setLoadingGoogle(false);
-      console.log(
-        "[google-oauth] native exchangeCodeForSession error:",
-        exchangeError.message,
-      );
-      Alert.alert("Google sign in failed", exchangeError.message);
-      return;
-    }
-
-    const { data: sessionData } = await supabase.auth.getSession();
-    if (!sessionData.session) {
-      setLoadingGoogle(false);
-      console.log("[google-oauth] native session missing after exchange");
-      Alert.alert(
-        "Google sign in failed",
-        "Session was not created after OAuth exchange.",
-      );
-      return;
-    }
-
-    const user = exchangeData?.user;
-    if (!user?.id) {
-      setLoadingGoogle(false);
-      Alert.alert(
-        "Google sign in failed",
-        "No user returned after session exchange.",
-      );
-      return;
-    }
-
-    // user_metadata from Supabase OAuth is unstructured Record<string, any> —
-    // asserting to read optional Google fields off it.
-    const meta = (user.user_metadata ?? {}) as Record<
-      string,
-      string | undefined
-    >;
-    const fullFromGoogle =
-      meta.full_name ||
-      meta.name ||
-      `${meta.given_name ?? ""} ${meta.family_name ?? ""}`.trim();
-
-    let fn = (meta.first_name || meta.given_name || "").trim();
-    let ln = (meta.last_name || meta.family_name || "").trim();
-
-    if (!fn && fullFromGoogle) {
-      fn = fullFromGoogle.split(" ")[0]?.trim() ?? "";
-      ln = fullFromGoogle.split(" ").slice(1).join(" ").trim();
-    }
-
-    const full = `${fn} ${ln}`.trim() || fullFromGoogle || "User";
-
-    const { error: updErr } = await supabase.auth.updateUser({
-      data: {
-        first_name: fn,
-        last_name: ln,
-        full_name: full,
-      },
-    });
-
-    if (updErr) {
-      console.log("updateUser metadata error:", updErr.message);
-    }
-
-    await upsertProfile({
-      id: user.id,
-      username: fn || "User",
-      full_name: full,
-      first_name: fn || null,
-      last_name: ln || null,
-    });
-
-    const { data: profileRow } = await supabase
-      .from("profiles")
-      .select("questionnaire_completed")
-      .eq("id", user.id)
-      .maybeSingle();
-
-    const completed =
-      (profileRow as { questionnaire_completed?: boolean } | null)
-        ?.questionnaire_completed === true;
-
-    setLoadingGoogle(false);
-    router.replace(completed ? "/user-home" : "/questionnaire");
   };
 
   const busy = loadingEmail || loadingGoogle;
