@@ -23,6 +23,7 @@ import {
 } from "../src/components/LeaderboardWidget";
 import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
 import { STORAGE_KEYS } from "../src/constants/storage";
+import { taskCountForAssignedCategory } from "../src/lib/circle-flow";
 import type { SuggestedCategory } from "../src/types/questionnaire";
 
 const POLL_MS = 3000;
@@ -223,7 +224,7 @@ export default function CircleHome() {
         // Categories this user picked for this circle.
         const { data: selRows } = await supabase
           .from("circle_member_category_selections")
-          .select("category_id, categories(id, name, icon)")
+          .select("category_id, is_common, categories(id, name, icon)")
           .eq("circle_id", circleId)
           .eq("user_id", uid);
 
@@ -232,6 +233,7 @@ export default function CircleHome() {
         type CategoryMini = { id: string; name: string; icon: string };
         type SelRow = {
           category_id: string;
+          is_common?: boolean | null;
           categories: CategoryMini | CategoryMini[] | null;
         };
         const selList = (selRows ?? []) as unknown as SelRow[];
@@ -314,15 +316,14 @@ export default function CircleHome() {
             });
           }
 
-          const catCount = myCategoryIds.length || 1;
-          const perCategory = Math.max(
-            1,
-            Math.floor(dailyTaskCount / catCount),
-          );
-
-          for (const catId of myCategoryIds) {
+          for (const selection of selList) {
+            const catId = String(selection.category_id);
             const list = byCat[catId] ?? [];
             const preferred = preferredTitlesByCat[catId];
+            const perCategory = taskCountForAssignedCategory(
+              dailyTaskCount,
+              selection.is_common === true,
+            );
             const sorted = preferred
               ? [...list].sort((a, b) => {
                   const ap = preferred.has(a.title.toLowerCase()) ? 0 : 1;

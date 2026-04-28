@@ -21,6 +21,7 @@ import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
 import { STORAGE_KEYS } from "../src/constants/storage";
 import {
   computeCategoryScores,
+  computeMotivationScoreLocal,
   computeMotivationTierLocal,
   getSuggestedSubtasks,
   getTopCategories,
@@ -150,6 +151,16 @@ export default function QuestionnaireScreen() {
       }
     }
 
+    const { error: deleteErr } = await supabase
+      .from("user_questionnaire_responses")
+      .delete()
+      .eq("user_id", uid);
+    if (deleteErr) {
+      setSaving(false);
+      Alert.alert("Save failed", deleteErr.message);
+      return;
+    }
+
     const { error: insErr } = await supabase
       .from("user_questionnaire_responses")
       .insert(rows);
@@ -159,34 +170,32 @@ export default function QuestionnaireScreen() {
       return;
     }
 
-    const { error: rpcErr } = await supabase.rpc(
-      "compute_and_save_motivation_score",
+    const tier: MotivationTier = computeMotivationTierLocal(
+      Number(responses.confidence_score ?? "5"),
+      responses.blocker as string | undefined,
+      responses.competitive_style as string | undefined,
     );
-    if (rpcErr) {
+    const motivationScore = computeMotivationScoreLocal(
+      Number(responses.confidence_score ?? "5"),
+      responses.blocker as string | undefined,
+      responses.competitive_style as string | undefined,
+    );
+
+    const { error: profileErr } = await supabase
+      .from("profiles")
+      .update({
+        motivation_score: motivationScore,
+        motivation_tier: tier,
+        questionnaire_completed: true,
+        questionnaire_completed_at: new Date().toISOString(),
+      })
+      .eq("id", uid);
+
+    if (profileErr) {
       setSaving(false);
-      Alert.alert("Couldn't compute score", rpcErr.message);
+      Alert.alert("Couldn't save profile", profileErr.message);
       return;
     }
-
-    const { data: profileRow } = await supabase
-      .from("profiles")
-      .select("motivation_score, motivation_tier")
-      .eq("id", uid)
-      .maybeSingle();
-
-    type Profile = {
-      motivation_score?: number;
-      motivation_tier?: MotivationTier;
-    };
-    const profile = (profileRow as Profile | null) ?? null;
-    const tier: MotivationTier =
-      profile?.motivation_tier ??
-      computeMotivationTierLocal(
-        Number(responses.confidence_score ?? "5"),
-        responses.blocker as string | undefined,
-        responses.competitive_style as string | undefined,
-      );
-    const motivationScore = profile?.motivation_score ?? null;
 
     const responsesAsArrays: Record<string, string[]> = {};
     for (const [k, v] of Object.entries(responses)) {
@@ -236,7 +245,7 @@ export default function QuestionnaireScreen() {
       pathname: "/category-suggestion",
       params: {
         suggestions: JSON.stringify(suggestions),
-        motivationScore: motivationScore != null ? String(motivationScore) : "",
+        motivationScore: String(motivationScore),
         motivationTier: tier,
       },
     });
