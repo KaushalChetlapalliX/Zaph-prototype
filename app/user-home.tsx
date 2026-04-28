@@ -17,9 +17,8 @@ import Svg, { Circle as SvgCircle } from "react-native-svg";
 import { supabase } from "../src/lib/supabase";
 import { TabBar } from "../src/components/TabBar";
 import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
-import { STORAGE_KEYS } from "../src/constants/storage";
 import { taskCountForAssignedCategory } from "../src/lib/circle-flow";
-import type { SuggestedCategory } from "../src/types/questionnaire";
+import { loadPreferredSubtaskTitlesByCategoryId } from "../src/lib/task-personalization";
 
 const DEFAULT_DAILY_TASK_COUNT = 6;
 
@@ -68,6 +67,7 @@ function endOfWeekUTC(d = new Date()) {
 export default function UserHome() {
   const [firstName, setFirstName] = useState<string>("");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const [todayTasks, setTodayTasks] = useState<TodayTaskItem[]>([]);
   const [weeklyPoints, setWeeklyPoints] = useState<number>(0);
@@ -219,7 +219,7 @@ export default function UserHome() {
         // as an object or array depending on schema version — normalize below.
         const { data: memberRows, error: mErr } = await supabase
           .from("circle_members")
-          .select("circle_id, circles ( id, name, code )")
+          .select("circle_id, circles ( id, name, code, stage )")
           .eq("user_id", uid);
 
         if (!alive) return;
@@ -236,6 +236,7 @@ export default function UserHome() {
           id: string;
           name: string | null;
           code: string | number | null;
+          stage?: string | null;
         };
         type MemberRow = {
           circle_id: string;
@@ -247,13 +248,25 @@ export default function UserHome() {
         const circles: CircleMini[] = rows
           .map((r) => (Array.isArray(r.circles) ? r.circles[0] : r.circles))
           .filter((c): c is CircleMini => c != null)
+          .filter((c) => String(c.stage ?? "lobby") === "active")
           .map((c) => ({
             id: String(c.id),
             name: c.name ?? null,
             code: c.code ?? null,
+            stage: c.stage ?? null,
           }));
 
         const circleIds = circles.map((c) => c.id);
+        if (circleIds.length === 0) {
+          if (!alive) return;
+          setTodayTasks([]);
+          setWeeklyPoints(0);
+          setCircleCount(0);
+          setLoadError(null);
+          setLoading(false);
+          return;
+        }
+
         const circleNameById: Record<string, string> = {};
         for (const c of circles) {
           const nm = String(c.name ?? "").trim();
@@ -279,33 +292,14 @@ export default function UserHome() {
           }
         }
 
-        // Preferred subtask titles per category, from this user's saved suggestions.
-        const preferredTitlesByCat: Record<string, Set<string>> = {};
-        try {
-          const stored = await AsyncStorage.getItem(
-            STORAGE_KEYS.SUGGESTED_CATEGORIES,
-          );
-          if (stored) {
-            const arr = JSON.parse(stored) as SuggestedCategory[];
-            for (const s of arr) {
-              preferredTitlesByCat[String(s.id)] = new Set(
-                (s.suggestedSubtasks ?? []).map((t) => t.toLowerCase()),
-              );
-            }
-          }
-        } catch {
-          // ignore
-        }
-
-        // Per-circle category picks for this user. Each picked category fans
-        // out to all 5 of its category_subtasks for the week.
-        const { data: selRows } = await supabase
+        const { data: selRows, error: selErr } = await supabase
           .from("circle_member_category_selections")
           .select("circle_id, category_id, is_common")
           .eq("user_id", uid)
           .in("circle_id", circleIds);
 
         if (!alive) return;
+        if (selErr) throw new Error(selErr.message);
 
         type SelRow = {
           circle_id: string;
@@ -320,10 +314,11 @@ export default function UserHome() {
 
         const categoryById: Record<string, { name: string; icon: string }> = {};
         if (categoryIds.length > 0) {
-          const { data: catRows } = await supabase
+          const { data: catRows, error: catErr } = await supabase
             .from("categories")
             .select("id, name, icon")
             .in("id", categoryIds);
+          if (catErr) throw new Error(catErr.message);
           if (catRows) {
             type CatRow = { id: string; name: string; icon: string };
             for (const c of catRows as unknown as CatRow[]) {
@@ -335,6 +330,16 @@ export default function UserHome() {
           }
         }
 
+        const preferredTitlesByCat = await loadPreferredSubtaskTitlesByCategoryId(
+          uid,
+          categoryIds
+            .map((categoryId) => ({
+              id: categoryId,
+              name: categoryById[categoryId]?.name ?? "",
+            }))
+            .filter((category) => category.name.length > 0),
+        );
+
         type SubtaskRow = {
           id: string;
           category_id: string;
@@ -343,11 +348,12 @@ export default function UserHome() {
         };
         let subtasks: SubtaskRow[] = [];
         if (categoryIds.length > 0) {
-          const { data: stRows } = await supabase
+          const { data: stRows, error: stErr } = await supabase
             .from("category_subtasks")
             .select("id, category_id, title, sort_order")
             .in("category_id", categoryIds)
             .order("sort_order", { ascending: true });
+          if (stErr) throw new Error(stErr.message);
           if (stRows) subtasks = stRows as unknown as SubtaskRow[];
         }
 
@@ -454,6 +460,18 @@ export default function UserHome() {
         setTodayTasks(nextTasks);
         setWeeklyPoints(myTotal);
         setCircleCount(circles.length);
+        setLoadError(null);
+        setLoading(false);
+      } catch (error) {
+        if (!alive) return;
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Could not load your tasks.";
+        setTodayTasks([]);
+        setWeeklyPoints(0);
+        setCircleCount(0);
+        setLoadError(message);
         setLoading(false);
       } finally {
         inFlightRef.current = false;
@@ -586,11 +604,16 @@ export default function UserHome() {
               <View style={styles.emptyState}>
                 <Text style={styles.emptyText}>Loading your week…</Text>
               </View>
+            ) : loadError ? (
+              <View style={styles.emptyState}>
+                <Text style={styles.emptyTitle}>Couldn't load tasks</Text>
+                <Text style={styles.emptyHelper}>{loadError}</Text>
+              </View>
             ) : todayTasks.length === 0 ? (
               <View style={styles.emptyState}>
                 <Text style={styles.emptyTitle}>No tasks yet</Text>
                 <Text style={styles.emptyHelper}>
-                  Join or create a circle to start your week.
+                  Start a circle week to see tasks here.
                 </Text>
               </View>
             ) : (
