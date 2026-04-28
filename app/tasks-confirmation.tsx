@@ -18,8 +18,6 @@ import { supabase } from "../src/lib/supabase";
 import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
 import { assignCircleCategoriesFromQuestionnaire } from "../src/lib/circle-flow";
 
-type Difficulty = "easy" | "medium" | "hard";
-
 type CategoryMini = {
   id: string;
   name: string;
@@ -331,16 +329,30 @@ export default function TasksConfirmationScreen() {
       setAssigned(true);
     } catch (error) {
       const message =
-        error instanceof Error
-          ? error.message
-          : "Could not assign categories.";
+        error instanceof Error ? error.message : "Could not assign categories.";
       console.error("[tasks-confirmation] assign categories:", message);
       setAssigning(false);
       Alert.alert("Could not assign categories", message);
       return;
     }
 
+    // Chain straight into starting the week so the admin doesn't get
+    // stranded on this screen — once stage stays "selecting", reopening
+    // the circle bounces back here.
+    const { error: rpcErr } = await supabase.rpc("start_circle_week", {
+      p_circle_id: circleId,
+    });
+
+    if (rpcErr) {
+      console.error("[tasks-confirmation] start_circle_week:", rpcErr.message);
+      setAssigning(false);
+      Alert.alert("Could not start the week", rpcErr.message);
+      return;
+    }
+
+    navigatedRef.current = true;
     setAssigning(false);
+    router.replace({ pathname: "/circle-home", params: { circleId } });
   };
 
   const handleStart = async () => {
