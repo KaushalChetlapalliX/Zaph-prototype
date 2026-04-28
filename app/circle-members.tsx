@@ -60,6 +60,7 @@ export default function CircleMembersScreen() {
   const membersSigRef = useRef<string>("");
   const circleSigRef = useRef<string>("");
   const initialMembersLoadedRef = useRef(false);
+  const openingRef = useRef(false);
 
   const mountAnim = useRef(new Animated.Value(0)).current;
 
@@ -275,23 +276,28 @@ export default function CircleMembersScreen() {
   const handleSelectTasks = async () => {
     if (!circleId) return;
     if (!isAdmin) return;
-    if (starting) return;
+    if (starting || openingRef.current) return;
 
+    openingRef.current = true;
     setStarting(true);
 
     // Ensure the admin's picks are written to the DB before flipping stage.
     // Once stage leaves "lobby", syncCircleSelectionsForCurrentUser becomes a no-op.
     try {
       await syncCircleSelectionsForCurrentUser(circleId);
-    } catch {
-      // Existing selections are fine; only a hard failure (e.g. missing
-      // questionnaire) reaches here, and assignCircleCategoriesFromQuestionnaire
-      // backfills missing rows on the next screen.
+    } catch (error) {
+      openingRef.current = false;
+      setStarting(false);
+      const message =
+        error instanceof Error ? error.message : "Could not load your picks.";
+      Alert.alert("Open lineup failed", message);
+      return;
     }
 
     try {
       await setCircleStage(circleId, "selecting");
     } catch (error) {
+      openingRef.current = false;
       setStarting(false);
       const message =
         error instanceof Error ? error.message : "Could not open the lineup.";
@@ -300,6 +306,7 @@ export default function CircleMembersScreen() {
     }
 
     navigatedRef.current = true;
+    openingRef.current = false;
     setStarting(false);
 
     router.replace({

@@ -20,6 +20,7 @@ import {
   assignCircleCategoriesFromQuestionnaire,
   backfillMissingCircleSelectionsFromQuestionnaire,
   forceSyncCircleSelectionsForCurrentUser,
+  setCircleStage,
   startCircleWeek,
 } from "../src/lib/circle-flow";
 
@@ -82,12 +83,15 @@ export default function TasksConfirmationScreen() {
   const [assigning, setAssigning] = useState(false);
   const [assigned, setAssigned] = useState(false);
   const [dailyTaskCount, setDailyTaskCount] = useState<number>(6);
+  const [circleStage, setCircleStageState] = useState<string>("selecting");
 
   const initialLoadedRef = useRef(false);
   const groupsSigRef = useRef<string>("");
   const navigatedRef = useRef(false);
   const healedCurrentUserRef = useRef(false);
   const healedMissingRef = useRef(false);
+  const assigningRef = useRef(false);
+  const startingRef = useRef(false);
 
   const mountAnim = useRef(new Animated.Value(0)).current;
   const pulseAnim = useRef(new Animated.Value(0)).current;
@@ -191,13 +195,15 @@ export default function TasksConfirmationScreen() {
 
       const { data: circleCfg } = await supabase
         .from("circles")
-        .select("daily_task_count")
+        .select("daily_task_count, stage")
         .eq("id", circleId)
         .maybeSingle();
 
       if (!alive) return;
 
       const cfg = (circleCfg ?? null) as CircleConfigRow | null;
+      const nextStage = String(cfg?.stage ?? "selecting");
+      setCircleStageState(nextStage);
       if (cfg?.daily_task_count && typeof cfg.daily_task_count === "number") {
         setDailyTaskCount(cfg.daily_task_count);
       }
@@ -248,8 +254,6 @@ export default function TasksConfirmationScreen() {
         if (users.size > 1) sharedSet.add(catId);
       }
 
-      setAssigned(anyAssigned);
-
       const nextGroups: MemberGroup[] = members.map((m) => {
         const fn = (m.first_name ?? "").trim();
         const cats = userToCategories[m.user_id] ?? [];
@@ -262,6 +266,24 @@ export default function TasksConfirmationScreen() {
         };
       });
 
+      const shouldHoldPreviousGroups =
+        assigningRef.current &&
+        selections.length === 0 &&
+        groupsSigRef.current.length > 0;
+      if (shouldHoldPreviousGroups) {
+        setIsAdmin(nextIsAdmin);
+        setAdminName(nextAdminName);
+        setError(null);
+
+        if (!initialLoadedRef.current) {
+          initialLoadedRef.current = true;
+          setLoading(false);
+        }
+        return;
+      }
+
+      setAssigned(anyAssigned);
+
       const hasMissingCategories = nextGroups.some(
         (group) => group.categories.length === 0,
       );
@@ -269,10 +291,14 @@ export default function TasksConfirmationScreen() {
         (group) => group.isMe && group.categories.length === 0,
       );
 
+      const canRepairSelections =
+        nextStage !== "loading" && !assigningRef.current;
+
       if (
         myGroupMissingCategories &&
         !assigned &&
-        !healedCurrentUserRef.current
+        !healedCurrentUserRef.current &&
+        canRepairSelections
       ) {
         healedCurrentUserRef.current = true;
         try {
@@ -291,7 +317,8 @@ export default function TasksConfirmationScreen() {
       if (
         hasMissingCategories &&
         !anyAssigned &&
-        !healedMissingRef.current
+        !healedMissingRef.current &&
+        canRepairSelections
       ) {
         healedMissingRef.current = true;
         try {
@@ -373,9 +400,23 @@ export default function TasksConfirmationScreen() {
   }, [circleId]);
 
   const handleAssign = async () => {
-    if (!circleId || assigning) return;
+    if (!circleId || assigning || assigningRef.current) return;
+    if (groups.some((group) => group.categories.length === 0)) return;
 
+    assigningRef.current = true;
     setAssigning(true);
+
+    try {
+      await setCircleStage(circleId, "loading");
+      setCircleStageState("loading");
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Could not begin assignment.";
+      assigningRef.current = false;
+      setAssigning(false);
+      Alert.alert("Could not assign categories", message);
+      return;
+    }
 
     try {
       const nextDailyTaskCount =
@@ -385,6 +426,11 @@ export default function TasksConfirmationScreen() {
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Could not assign categories.";
+      try {
+        await setCircleStage(circleId, "selecting");
+        setCircleStageState("selecting");
+      } catch {}
+      assigningRef.current = false;
       console.error("[tasks-confirmation] assign categories:", message);
       setAssigning(false);
       Alert.alert("Could not assign categories", message);
@@ -399,6 +445,11 @@ export default function TasksConfirmationScreen() {
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Could not start the week.";
+      try {
+        await setCircleStage(circleId, "selecting");
+        setCircleStageState("selecting");
+      } catch {}
+      assigningRef.current = false;
       console.error("[tasks-confirmation] startCircleWeek:", message);
       setAssigning(false);
       Alert.alert("Could not start the week", message);
@@ -406,13 +457,15 @@ export default function TasksConfirmationScreen() {
     }
 
     navigatedRef.current = true;
+    assigningRef.current = false;
     setAssigning(false);
     router.replace({ pathname: "/circle-home", params: { circleId } });
   };
 
   const handleStart = async () => {
-    if (!circleId || starting) return;
+    if (!circleId || starting || startingRef.current) return;
 
+    startingRef.current = true;
     setStarting(true);
 
     try {
@@ -421,17 +474,28 @@ export default function TasksConfirmationScreen() {
       const message =
         error instanceof Error ? error.message : "Could not start the week.";
       console.error("[tasks-confirmation] startCircleWeek:", message);
+      startingRef.current = false;
       setStarting(false);
       Alert.alert("Could not start the week", message);
       return;
     }
 
     navigatedRef.current = true;
+    startingRef.current = false;
     router.replace({ pathname: "/circle-home", params: { circleId } });
   };
 
   const list = useMemo(() => groups, [groups]);
-  const startDisabled = list.length === 0 || starting;
+  const hasPendingSelections = list.some((group) => group.categories.length === 0);
+  const startDisabled =
+    list.length === 0 || starting || loading || circleStage === "loading";
+  const assignDisabled =
+    list.length === 0 ||
+    assigning ||
+    loading ||
+    error !== null ||
+    hasPendingSelections ||
+    circleStage === "loading";
 
   const translate = mountAnim.interpolate({
     inputRange: [0, 1],
@@ -456,9 +520,13 @@ export default function TasksConfirmationScreen() {
         <Text style={styles.helper}>
           {list.length === 0
             ? "Waiting for selections to come in."
-            : assigned
-              ? `Your circle will do ${dailyTaskCount} tasks per day.`
-              : "Categories in. Assign to lock the circle's daily set."}
+            : circleStage === "loading"
+              ? "Locking categories and starting the week…"
+              : hasPendingSelections
+                ? "Waiting for everyone's categories to finish loading."
+                : assigned
+                  ? `Your circle will do ${dailyTaskCount} tasks per day.`
+                  : "Categories in. Assign to lock the circle's daily set."}
         </Text>
       </Animated.View>
 
@@ -572,12 +640,12 @@ export default function TasksConfirmationScreen() {
           {!assigned ? (
             <Pressable
               onPress={handleAssign}
-              disabled={startDisabled || assigning}
+              disabled={assignDisabled}
               style={({ pressed }) => [
                 styles.secondary,
-                (startDisabled || assigning) && styles.primaryDisabled,
+                assignDisabled && styles.primaryDisabled,
                 pressed &&
-                  !(startDisabled || assigning) &&
+                  !assignDisabled &&
                   styles.primaryPressed,
               ]}
             >
