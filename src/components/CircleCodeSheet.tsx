@@ -56,11 +56,46 @@ export function CircleCodeSheet({
         .toString()
         .padStart(4, "0");
 
-      setVisible(false);
+      const { data, error } = await supabase.rpc("create_circle_with_code", {
+        desired_code: randomCode,
+        difficulty: LEGACY_CIRCLE_DIFFICULTY,
+        circle_name: name,
+      });
 
-      router.push({
-        pathname: "/onboarding",
-        params: { code: randomCode, name },
+      if (error) {
+        Alert.alert("Create failed", error.message);
+        return;
+      }
+
+      const row = Array.isArray(data) ? data[0] : data;
+      const circleRow = (row ?? {}) as Record<string, string | undefined>;
+      const circleId = String(
+        circleRow.out_circle_id ?? circleRow.circle_id ?? circleRow.id ?? "",
+      );
+      const circleCode = String(
+        circleRow.out_code ?? circleRow.code ?? randomCode,
+      );
+
+      if (!circleId || circleId === "undefined") {
+        Alert.alert("Create failed", "Circle id was not returned.");
+        return;
+      }
+
+      await syncCircleSelectionsForCurrentUser(circleId);
+
+      try {
+        await AsyncStorage.setItem("activeCircleId", circleId);
+        await AsyncStorage.setItem("activeCircleCode", circleCode);
+        await AsyncStorage.setItem("activeCircleName", name);
+      } catch {}
+
+      router.replace({
+        pathname: "/circle-members",
+        params: {
+          circleId,
+          circleCode,
+          circleName: name,
+        },
       });
     } catch (error) {
       const message =
