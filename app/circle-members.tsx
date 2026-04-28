@@ -89,12 +89,23 @@ export default function CircleMembersScreen() {
     init();
   }, [circleIdParam]);
 
-  const maybeNavigateToSelect = (nextStage: string) => {
-    if (navigatedRef.current) return;
-    if (nextStage !== "selecting") return;
+  const maybeNavigateFromStage = (nextStage: string) => {
+    if (navigatedRef.current || !circleId) return;
 
-    navigatedRef.current = true;
-    router.replace({ pathname: "/tasks-confirmation", params: { circleId } });
+    if (nextStage === "active") {
+      navigatedRef.current = true;
+      router.replace({ pathname: "/circle-home", params: { circleId } });
+      return;
+    }
+
+    if (
+      nextStage === "selecting" ||
+      nextStage === "loading" ||
+      nextStage === "confirm"
+    ) {
+      navigatedRef.current = true;
+      router.replace({ pathname: "/tasks-confirmation", params: { circleId } });
+    }
   };
 
   useEffect(() => {
@@ -126,7 +137,7 @@ export default function CircleMembersScreen() {
       const nextStage = String(typed.stage ?? "lobby");
 
       applyCircleIfChanged(nextCode, nextStage);
-      maybeNavigateToSelect(nextStage);
+      maybeNavigateFromStage(nextStage);
     };
 
     loadCircle();
@@ -147,7 +158,7 @@ export default function CircleMembersScreen() {
           const nextCode = String(newRow.code ?? "");
 
           applyCircleIfChanged(nextCode || circleCode, nextStage);
-          maybeNavigateToSelect(nextStage);
+          maybeNavigateFromStage(nextStage);
         },
       )
       .subscribe();
@@ -323,8 +334,12 @@ export default function CircleMembersScreen() {
         </View>
         <Text style={styles.title}>Circle members.</Text>
         <Text style={styles.helper}>
-          {stage === "selecting"
-            ? "Opening the weekly lineup…"
+          {stage === "active"
+            ? "Week is live. Opening your circle…"
+            : stage === "selecting" ||
+                stage === "loading" ||
+                stage === "confirm"
+              ? "Opening the weekly lineup…"
             : isAdmin
               ? "Open the weekly lineup whenever your circle is ready."
               : "Waiting for the admin to open the lineup."}

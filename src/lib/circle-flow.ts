@@ -44,6 +44,12 @@ interface ProfileScoreRow {
   motivation_score?: number | null;
 }
 
+interface UpdatedCircleRow {
+  daily_task_count?: number | null;
+  id?: string;
+  stage?: string | null;
+}
+
 function rowsToResponses(
   rows: QuestionnaireResponseRow[],
 ): Record<string, string[]> {
@@ -594,12 +600,21 @@ export async function assignCircleCategoriesFromQuestionnaire(
 
   if (saveErr) throw new Error(saveErr.message);
 
-  const { error: circleErr } = await supabase
+  const { data: circleData, error: circleErr } = await supabase
     .from("circles")
     .update({ daily_task_count: dailyTaskCount })
-    .eq("id", circleId);
+    .eq("id", circleId)
+    .select("id, daily_task_count")
+    .maybeSingle();
 
   if (circleErr) throw new Error(circleErr.message);
+
+  const updatedCircle = (circleData ?? null) as UpdatedCircleRow | null;
+  if (!updatedCircle?.id || updatedCircle.daily_task_count !== dailyTaskCount) {
+    throw new Error(
+      "Circle settings could not be updated. Please try assigning again.",
+    );
+  }
 
   return dailyTaskCount;
 }
@@ -608,16 +623,25 @@ export async function setCircleStage(
   circleId: string,
   stage: "lobby" | "selecting" | "loading" | "confirm" | "active",
 ): Promise<void> {
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("circles")
     .update({ stage })
-    .eq("id", circleId);
+    .eq("id", circleId)
+    .select("id, stage")
+    .maybeSingle();
 
   if (error) throw new Error(error.message);
+
+  const updatedCircle = (data ?? null) as UpdatedCircleRow | null;
+  if (!updatedCircle?.id || updatedCircle.stage !== stage) {
+    throw new Error(`Circle stage could not be moved to ${stage}.`);
+  }
 }
 
 export async function startCircleWeek(circleId: string): Promise<void> {
-  const { data: userData } = await supabase.auth.getUser();
+  const { data: userData, error: userErr } = await supabase.auth.getUser();
+  if (userErr) throw new Error(userErr.message);
+
   const userId = userData.user?.id ?? null;
 
   const payload: {
@@ -631,12 +655,21 @@ export async function startCircleWeek(circleId: string): Promise<void> {
 
   if (userId) payload.started_by = userId;
 
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("circles")
     .update(payload)
-    .eq("id", circleId);
+    .eq("id", circleId)
+    .select("id, stage")
+    .maybeSingle();
 
   if (error) throw new Error(error.message);
+
+  const updatedCircle = (data ?? null) as UpdatedCircleRow | null;
+  if (!updatedCircle?.id || updatedCircle.stage !== "active") {
+    throw new Error(
+      "Circle could not be started. The circle never left the selecting stage.",
+    );
+  }
 }
 
 export function taskCountForAssignedCategory(

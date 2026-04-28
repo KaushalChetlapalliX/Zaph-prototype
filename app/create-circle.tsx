@@ -165,6 +165,8 @@ export default function CreateCircle() {
 
     if (
       stage === "selecting" ||
+      stage === "loading" ||
+      stage === "confirm" ||
       stage === "confirmation" ||
       stage === "finalized" ||
       stage === "ready"
@@ -288,7 +290,9 @@ export default function CreateCircle() {
                     <Text style={styles.rowMetaText}>
                       {stage === "active"
                         ? "Week live"
-                        : stage === "selecting"
+                        : stage === "selecting" ||
+                            stage === "loading" ||
+                            stage === "confirm"
                           ? "Lineup"
                           : "Lobby"}
                     </Text>
