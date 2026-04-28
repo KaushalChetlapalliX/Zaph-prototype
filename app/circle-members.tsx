@@ -16,7 +16,10 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "../src/lib/supabase";
 import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
-import { syncCircleSelectionsForCurrentUser } from "../src/lib/circle-flow";
+import {
+  setCircleStage,
+  syncCircleSelectionsForCurrentUser,
+} from "../src/lib/circle-flow";
 
 type MemberRow = {
   user_id: string;
@@ -275,14 +278,13 @@ export default function CircleMembersScreen() {
       // backfills missing rows on the next screen.
     }
 
-    const { error } = await supabase.rpc("set_circle_stage", {
-      p_circle_id: circleId,
-      p_stage: "selecting",
-    });
-
-    if (error) {
+    try {
+      await setCircleStage(circleId, "selecting");
+    } catch (error) {
       setStarting(false);
-      Alert.alert("Open lineup failed", error.message);
+      const message =
+        error instanceof Error ? error.message : "Could not open the lineup.";
+      Alert.alert("Open lineup failed", message);
       return;
     }
 

@@ -19,6 +19,8 @@ import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
 import {
   assignCircleCategoriesFromQuestionnaire,
   backfillMissingCircleSelectionsFromQuestionnaire,
+  forceSyncCircleSelectionsForCurrentUser,
+  startCircleWeek,
 } from "../src/lib/circle-flow";
 
 type CategoryMini = {
@@ -84,6 +86,7 @@ export default function TasksConfirmationScreen() {
   const initialLoadedRef = useRef(false);
   const groupsSigRef = useRef<string>("");
   const navigatedRef = useRef(false);
+  const healedCurrentUserRef = useRef(false);
   const healedMissingRef = useRef(false);
 
   const mountAnim = useRef(new Animated.Value(0)).current;
@@ -262,6 +265,28 @@ export default function TasksConfirmationScreen() {
       const hasMissingCategories = nextGroups.some(
         (group) => group.categories.length === 0,
       );
+      const myGroupMissingCategories = nextGroups.some(
+        (group) => group.isMe && group.categories.length === 0,
+      );
+
+      if (
+        myGroupMissingCategories &&
+        !assigned &&
+        !healedCurrentUserRef.current
+      ) {
+        healedCurrentUserRef.current = true;
+        try {
+          await forceSyncCircleSelectionsForCurrentUser(circleId);
+          if (!alive) return;
+          await fetchGroups();
+          return;
+        } catch (repairError) {
+          console.error(
+            "[tasks-confirmation] force sync current user selections:",
+            repairError,
+          );
+        }
+      }
 
       if (
         hasMissingCategories &&
@@ -369,14 +394,14 @@ export default function TasksConfirmationScreen() {
     // Chain straight into starting the week so the admin doesn't get
     // stranded on this screen — once stage stays "selecting", reopening
     // the circle bounces back here.
-    const { error: rpcErr } = await supabase.rpc("start_circle_week", {
-      p_circle_id: circleId,
-    });
-
-    if (rpcErr) {
-      console.error("[tasks-confirmation] start_circle_week:", rpcErr.message);
+    try {
+      await startCircleWeek(circleId);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Could not start the week.";
+      console.error("[tasks-confirmation] startCircleWeek:", message);
       setAssigning(false);
-      Alert.alert("Could not start the week", rpcErr.message);
+      Alert.alert("Could not start the week", message);
       return;
     }
 
@@ -390,14 +415,14 @@ export default function TasksConfirmationScreen() {
 
     setStarting(true);
 
-    const { error: rpcErr } = await supabase.rpc("start_circle_week", {
-      p_circle_id: circleId,
-    });
-
-    if (rpcErr) {
-      console.error("[tasks-confirmation] start_circle_week:", rpcErr.message);
+    try {
+      await startCircleWeek(circleId);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Could not start the week.";
+      console.error("[tasks-confirmation] startCircleWeek:", message);
       setStarting(false);
-      Alert.alert("Could not start the week", rpcErr.message);
+      Alert.alert("Could not start the week", message);
       return;
     }
 

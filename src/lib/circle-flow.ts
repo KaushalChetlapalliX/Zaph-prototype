@@ -168,24 +168,10 @@ export async function loadSuggestedCategoriesForUser(
   return suggestions;
 }
 
-export async function syncCircleSelectionsForCurrentUser(
+async function persistCircleSelectionsForUser(
   circleId: string,
+  userId: string,
 ): Promise<void> {
-  const { data: userData } = await supabase.auth.getUser();
-  const userId = userData.user?.id;
-  if (!userId) throw new Error("You need to be logged in to join a circle.");
-
-  const { data: circleRow } = await supabase
-    .from("circles")
-    .select("stage")
-    .eq("id", circleId)
-    .maybeSingle();
-
-  const stage = String(
-    (circleRow as { stage?: string | null } | null)?.stage ?? "lobby",
-  );
-  if (stage !== "lobby") return;
-
   const { data: existingRows } = await supabase
     .from("circle_member_category_selections")
     .select("assigned_by")
@@ -241,6 +227,37 @@ export async function syncCircleSelectionsForCurrentUser(
     .eq("user_id", userId);
 
   if (memberErr) throw new Error(memberErr.message);
+}
+
+export async function syncCircleSelectionsForCurrentUser(
+  circleId: string,
+): Promise<void> {
+  const { data: userData } = await supabase.auth.getUser();
+  const userId = userData.user?.id;
+  if (!userId) throw new Error("You need to be logged in to join a circle.");
+
+  const { data: circleRow } = await supabase
+    .from("circles")
+    .select("stage")
+    .eq("id", circleId)
+    .maybeSingle();
+
+  const stage = String(
+    (circleRow as { stage?: string | null } | null)?.stage ?? "lobby",
+  );
+  if (stage !== "lobby") return;
+
+  await persistCircleSelectionsForUser(circleId, userId);
+}
+
+export async function forceSyncCircleSelectionsForCurrentUser(
+  circleId: string,
+): Promise<void> {
+  const { data: userData } = await supabase.auth.getUser();
+  const userId = userData.user?.id;
+  if (!userId) throw new Error("You need to be logged in to continue.");
+
+  await persistCircleSelectionsForUser(circleId, userId);
 }
 
 export async function backfillMissingCircleSelectionsFromQuestionnaire(
@@ -585,6 +602,41 @@ export async function assignCircleCategoriesFromQuestionnaire(
   if (circleErr) throw new Error(circleErr.message);
 
   return dailyTaskCount;
+}
+
+export async function setCircleStage(
+  circleId: string,
+  stage: "lobby" | "selecting" | "loading" | "confirm" | "active",
+): Promise<void> {
+  const { error } = await supabase
+    .from("circles")
+    .update({ stage })
+    .eq("id", circleId);
+
+  if (error) throw new Error(error.message);
+}
+
+export async function startCircleWeek(circleId: string): Promise<void> {
+  const { data: userData } = await supabase.auth.getUser();
+  const userId = userData.user?.id ?? null;
+
+  const payload: {
+    stage: "active";
+    started_at: string;
+    started_by?: string;
+  } = {
+    stage: "active",
+    started_at: new Date().toISOString(),
+  };
+
+  if (userId) payload.started_by = userId;
+
+  const { error } = await supabase
+    .from("circles")
+    .update(payload)
+    .eq("id", circleId);
+
+  if (error) throw new Error(error.message);
 }
 
 export function taskCountForAssignedCategory(
