@@ -11,12 +11,6 @@ import {
   View,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import Svg, {
-  Circle as SvgCircle,
-  Polyline,
-  Circle,
-  Text as SvgText,
-} from "react-native-svg";
 import {
   Colors,
   ProgressGradient,
@@ -25,21 +19,11 @@ import {
   Typography,
 } from "../constants/design";
 
-const SLIDE_COUNT = 4;
-const TOP_LIMIT = 6;
-const BAR_LIMIT = 5;
-const CARD_HEIGHT = 320;
-const DAY_LABELS = ["1", "2", "3", "4", "5", "6", "7"];
-const LINE_COLORS = [
-  "#39D353",
-  "#5DADE2",
-  "#FFB800",
-  "#BF5AF2",
-  "#FF375F",
-  "#30D5C8",
-  "#FF9F0A",
-  "#A8A9AD",
-];
+const SLIDE_COUNT = 3;
+const TOP_LIMIT = 3;
+const CHART_HEIGHT = 140;
+const SPARK_DAYS = 7;
+const DAY_LETTERS = ["M", "T", "W", "T", "F", "S", "S"];
 
 export type LeaderRow = {
   userId: string;
@@ -54,11 +38,8 @@ type Props = {
   myUserId: string | null;
   loading: boolean;
   empty: boolean;
-  // Cumulative weekly points per user per day index 0..6 (Mon..Sun).
   weeklyByUserDay: Record<string, number[]>;
-  // Hard ceiling = tasks_per_day * 7 * points_per_task (theoretical max).
   weeklyCeiling: number;
-  // 1..7 — only draw line points up to this day index (inclusive).
   daysElapsed: number;
   onExpand?: (slide: number) => void;
 };
@@ -70,12 +51,6 @@ function medalColor(rank: number): string {
   return Colors.bg.cardActive;
 }
 
-const RING_SIZE = 200;
-const RING_STROKE = 10;
-const RING_RADIUS = (RING_SIZE - RING_STROKE) / 2;
-const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
-const AnimatedCircle = Animated.createAnimatedComponent(SvgCircle);
-
 export function LeaderboardWidget({
   leaderboard,
   maxWeeklyPoints,
@@ -84,7 +59,6 @@ export function LeaderboardWidget({
   loading,
   empty,
   weeklyByUserDay,
-  weeklyCeiling,
   daysElapsed,
   onExpand,
 }: Props) {
@@ -94,10 +68,32 @@ export function LeaderboardWidget({
   const scrollX = useRef(new Animated.Value(0)).current;
   const [page, setPage] = useState(0);
 
-  const top = leaderboard.slice(0, TOP_LIMIT);
+  const sortedLb = [...leaderboard].sort(
+    (a, b) => b.points - a.points || a.name.localeCompare(b.name),
+  );
+  const top3 = sortedLb.slice(0, TOP_LIMIT);
+  const myIdx = myUserId
+    ? sortedLb.findIndex((r) => r.userId === myUserId)
+    : -1;
+  const myRank = myIdx >= 0 ? myIdx + 1 : null;
+  const leader = sortedLb[0];
+  const gap = leader && myIdx >= 0 ? leader.points - sortedLb[myIdx].points : 0;
+  const maxBarPts = Math.max(...sortedLb.map((r) => r.points), 1);
 
+  const fillAnim = useRef(new Animated.Value(0)).current;
   const barsAnim = useRef(new Animated.Value(0)).current;
-  const ringAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (loading) return;
+    fillAnim.stopAnimation();
+    fillAnim.setValue(0);
+    Animated.timing(fillAnim, {
+      toValue: 1,
+      duration: 600,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [loading, leaderboard.length, maxWeeklyPoints, fillAnim]);
 
   useEffect(() => {
     if (loading) return;
@@ -105,23 +101,12 @@ export function LeaderboardWidget({
     barsAnim.setValue(0);
     Animated.timing(barsAnim, {
       toValue: 1,
-      duration: 620,
-      delay: 120,
-      easing: Easing.out(Easing.exp),
+      duration: 700,
+      delay: 100,
+      easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start();
-  }, [loading, leaderboard.length, maxWeeklyPoints, barsAnim]);
-
-  useEffect(() => {
-    const target =
-      maxWeeklyPoints > 0 ? Math.min(1, myPoints / maxWeeklyPoints) : 0;
-    Animated.timing(ringAnim, {
-      toValue: target,
-      duration: 620,
-      easing: Easing.out(Easing.exp),
-      useNativeDriver: true,
-    }).start();
-  }, [myPoints, maxWeeklyPoints, ringAnim]);
+  }, [loading, page, leaderboard.length, barsAnim]);
 
   const handleScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const x = e.nativeEvent.contentOffset.x;
@@ -131,95 +116,63 @@ export function LeaderboardWidget({
     if (next !== page && next >= 0 && next < SLIDE_COUNT) setPage(next);
   };
 
-  const slideStyle = (index: number) => {
-    if (slideWidth <= 0) return {};
-    const inputRange = [
-      (index - 1) * slideWidth,
-      index * slideWidth,
-      (index + 1) * slideWidth,
-    ];
-    return {
-      opacity: scrollX.interpolate({
-        inputRange,
-        outputRange: [0.45, 1, 0.45],
-        extrapolate: "clamp" as const,
-      }),
-      transform: [
-        { perspective: 900 },
-        {
-          rotateY: scrollX.interpolate({
-            inputRange,
-            outputRange: ["28deg", "0deg", "-28deg"],
-            extrapolate: "clamp" as const,
-          }),
-        },
-        {
-          scale: scrollX.interpolate({
-            inputRange,
-            outputRange: [0.93, 1, 0.93],
-            extrapolate: "clamp" as const,
-          }),
-        },
-      ],
-    };
-  };
-
-  const ringOffset = ringAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [RING_CIRCUMFERENCE, 0],
-  });
-
-  const renderListSlide = () => (
-    <Animated.View
-      key="list"
-      style={[styles.slide, { width: slideWidth }, slideStyle(0)]}
+  const renderTopThreeSlide = () => (
+    <Pressable
+      onPress={() => onExpand?.(0)}
+      style={[styles.slide, { width: slideWidth }]}
     >
-      <Pressable onPress={() => onExpand?.(0)} style={styles.card}>
-        <Text style={styles.cardOverline}>Standings</Text>
-        {top.length === 0 ? (
-          <View style={styles.emptyInline}>
+      <View style={styles.card}>
+        {top3.length === 0 ? (
+          <View style={styles.centered}>
             <Text style={styles.emptyText}>No points yet</Text>
           </View>
         ) : (
-          <View style={styles.listGap}>
-            {top.map((row, idx) => {
+          <View style={styles.topThreeList}>
+            {top3.map((row, idx) => {
               const rank = idx + 1;
               const fill =
                 maxWeeklyPoints > 0
                   ? Math.min(1, row.points / maxWeeklyPoints)
                   : 0;
-              const w = barsAnim.interpolate({
+              const w = fillAnim.interpolate({
                 inputRange: [0, 1],
                 outputRange: ["0%", `${fill * 100}%`],
               });
+              const isMe = row.userId === myUserId;
+              const rc = medalColor(rank);
               return (
-                <View key={row.userId} style={styles.listRow}>
+                <View key={row.userId} style={styles.topThreeRow}>
                   <View
                     style={[
-                      styles.medal,
-                      { backgroundColor: medalColor(rank) },
+                      styles.rankChip,
+                      {
+                        backgroundColor: rc,
+                        shadowColor: rc,
+                      },
                     ]}
                   >
-                    <Text
-                      style={[
-                        styles.medalText,
-                        rank <= 3 && styles.medalTextTop,
-                      ]}
-                    >
-                      {rank}
-                    </Text>
+                    <Text style={styles.rankChipText}>{rank}</Text>
                   </View>
-                  <View style={styles.listBody}>
-                    <View style={styles.listTopRow}>
-                      <Text style={styles.listName} numberOfLines={1}>
+                  <View style={styles.topThreeBody}>
+                    <View style={styles.topThreeHead}>
+                      <Text style={styles.topThreeName} numberOfLines={1}>
                         {row.name}
+                        {isMe ? (
+                          <Text style={styles.youInline}> · you</Text>
+                        ) : null}
                       </Text>
-                      <Text style={styles.listPts}>{row.points} pts</Text>
+                      <Text style={styles.topThreePts}>{row.points} pts</Text>
                     </View>
                     <View style={styles.barTrack}>
                       <Animated.View style={[styles.barFill, { width: w }]}>
                         <LinearGradient
-                          colors={[...ProgressGradient]}
+                          colors={
+                            ProgressGradient as unknown as readonly [
+                              string,
+                              string,
+                              ...string[],
+                            ]
+                          }
                           start={{ x: 0, y: 0 }}
                           end={{ x: 1, y: 0 }}
                           style={StyleSheet.absoluteFill}
@@ -232,234 +185,171 @@ export function LeaderboardWidget({
             })}
           </View>
         )}
-      </Pressable>
-    </Animated.View>
+      </View>
+    </Pressable>
   );
 
-  const renderBarsSlide = () => {
-    // Top 5, sorted ascending so the largest pillar is on the right.
-    const ranked = leaderboard.slice(0, BAR_LIMIT);
-    const sorted = [...ranked].sort((a, b) => a.points - b.points);
-    const max = sorted.length > 0 ? sorted[sorted.length - 1].points : 0;
-    return (
-      <Animated.View
-        key="bars"
-        style={[styles.slide, { width: slideWidth }, slideStyle(1)]}
-      >
-        <Pressable onPress={() => onExpand?.(1)} style={styles.card}>
-          <Text style={styles.cardOverline}>Points by member</Text>
-          {sorted.length === 0 ? (
-            <View style={styles.emptyInline}>
-              <Text style={styles.emptyText}>Nothing to chart yet</Text>
-            </View>
-          ) : (
-            <View style={styles.barsRow}>
-              {sorted.map((row) => {
-                const ratio = max > 0 ? row.points / max : 0;
-                const h = barsAnim.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: ["6%", `${Math.max(6, ratio * 100)}%`],
-                });
-                return (
-                  <View key={row.userId} style={styles.barCol}>
-                    <Text style={styles.barValue}>{row.points}</Text>
-                    <View style={styles.barWell}>
-                      <Animated.View style={[styles.barPillar, { height: h }]}>
-                        <LinearGradient
-                          colors={[...ProgressGradient]}
-                          start={{ x: 0, y: 1 }}
-                          end={{ x: 0, y: 0 }}
-                          style={StyleSheet.absoluteFill}
-                        />
-                      </Animated.View>
-                    </View>
-                    <Text style={styles.barLabel} numberOfLines={1}>
-                      {row.name}
-                    </Text>
-                  </View>
-                );
-              })}
-            </View>
-          )}
-        </Pressable>
-      </Animated.View>
-    );
-  };
-
-  const renderLineSlide = () => {
-    // X axis: day 0 (hidden origin) through day 7. Y axis: cumulative points,
-    // ceilinged at the theoretical weekly max so lines stay below the top.
-    const padL = 40; // room for y-axis numeric labels
-    const padR = 64; // room for names at the right edge
-    const padT = 16;
-    const padB = 28;
-    const chartW = Math.max(0, slideWidth - 40);
-    const innerW = Math.max(0, chartW - padL - padR);
-    const innerH = 180;
-    const totalH = innerH + padT + padB;
-
-    const users = leaderboard.slice(0, TOP_LIMIT);
-    const yMax = weeklyCeiling > 0 ? weeklyCeiling : 1;
-    const lastDay = Math.min(7, Math.max(1, daysElapsed));
-
-    // 8 stops: index 0 = hidden origin, 1..7 = labeled days.
-    const xFor = (dayIdx: number) => padL + (dayIdx / 7) * innerW;
-    const yFor = (val: number) => padT + innerH - (val / yMax) * innerH;
-
-    return (
-      <Animated.View
-        key="line"
-        style={[styles.slide, { width: slideWidth }, slideStyle(2)]}
-      >
-        <Pressable onPress={() => onExpand?.(2)} style={styles.card}>
-          <Text style={styles.cardOverline}>Daily progress</Text>
-          {users.length === 0 ? (
-            <View style={styles.emptyInline}>
-              <Text style={styles.emptyText}>Not enough data</Text>
-            </View>
-          ) : (
-            <View style={styles.lineWrap}>
-              <Svg
-                width={chartW}
-                height={totalH}
-                viewBox={`0 0 ${chartW} ${totalH}`}
-              >
-                {[0, 0.5, 1].map((g, i) => {
-                  const yVal = Math.round(yMax * (1 - g));
-                  return (
-                    <React.Fragment key={`grid-${i}`}>
-                      <Polyline
-                        points={`${padL},${padT + innerH * g} ${padL + innerW},${padT + innerH * g}`}
-                        fill="none"
-                        stroke={Colors.progressTrack}
-                        strokeWidth={1}
-                      />
-                      <SvgText
-                        x={padL - 6}
-                        y={padT + innerH * g + 3}
-                        fontSize={10}
-                        fill={Colors.text.secondary}
-                        textAnchor="end"
-                      >
-                        {yVal}
-                      </SvgText>
-                    </React.Fragment>
-                  );
-                })}
-
-                {DAY_LABELS.map((d, i) => (
-                  <SvgText
-                    key={`day-${i}`}
-                    x={xFor(i + 1)}
-                    y={padT + innerH + 18}
-                    fontSize={10}
-                    fill={Colors.text.secondary}
-                    textAnchor="middle"
-                  >
-                    {d}
-                  </SvgText>
-                ))}
-
-                {users.map((u, idx) => {
-                  const series = weeklyByUserDay[u.userId] ?? [];
-                  const isMe = u.userId === myUserId;
-                  const color = isMe
-                    ? Colors.brand.greenBright
-                    : LINE_COLORS[idx % LINE_COLORS.length];
-                  // Origin at day 0 = 0 pts; only draw through days that have actually elapsed.
-                  const coords: Array<[number, number]> = [[xFor(0), yFor(0)]];
-                  for (let d = 1; d <= lastDay; d++) {
-                    const v = series[d - 1] ?? 0;
-                    coords.push([xFor(d), yFor(v)]);
-                  }
-                  const pts = coords.map(([x, y]) => `${x},${y}`).join(" ");
-                  const [lastX, lastY] = coords[coords.length - 1];
-                  return (
-                    <React.Fragment key={u.userId}>
-                      <Polyline
-                        points={pts}
-                        fill="none"
-                        stroke={color}
-                        strokeWidth={isMe ? 2.5 : 2}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        opacity={isMe ? 1 : 0.85}
-                      />
-                      <Circle
-                        cx={lastX}
-                        cy={lastY}
-                        r={isMe ? 4 : 3}
-                        fill={color}
-                      />
-                      <SvgText
-                        x={lastX + 6}
-                        y={lastY + 3}
-                        fontSize={10}
-                        fontWeight={isMe ? "700" : "500"}
-                        fill={color}
-                      >
-                        {u.name}
-                      </SvgText>
-                    </React.Fragment>
-                  );
-                })}
-              </Svg>
-              <Text style={styles.axisLabel}>Day</Text>
-            </View>
-          )}
-        </Pressable>
-      </Animated.View>
-    );
-  };
-
-  const renderRingSlide = () => {
-    const pct =
-      maxWeeklyPoints > 0 ? Math.min(1, myPoints / maxWeeklyPoints) : 0;
-    return (
-      <Animated.View
-        key="ring"
-        style={[styles.slide, { width: slideWidth }, slideStyle(3)]}
-      >
-        <Pressable
-          onPress={() => onExpand?.(3)}
-          style={[styles.card, styles.ringCard]}
-        >
-          <Text style={styles.cardOverline}>Your week</Text>
-          <View style={styles.ringWrap}>
-            <Svg width={RING_SIZE} height={RING_SIZE}>
-              <SvgCircle
-                cx={RING_SIZE / 2}
-                cy={RING_SIZE / 2}
-                r={RING_RADIUS}
-                stroke={Colors.progressTrack}
-                strokeWidth={RING_STROKE}
-                fill="transparent"
-              />
-              <AnimatedCircle
-                cx={RING_SIZE / 2}
-                cy={RING_SIZE / 2}
-                r={RING_RADIUS}
-                stroke={Colors.brand.greenBright}
-                strokeWidth={RING_STROKE}
-                strokeDasharray={RING_CIRCUMFERENCE}
-                strokeDashoffset={ringOffset}
-                strokeLinecap="round"
-                fill="transparent"
-                transform={`rotate(-90 ${RING_SIZE / 2} ${RING_SIZE / 2})`}
-              />
-            </Svg>
-            <View style={styles.ringLabel} pointerEvents="none">
-              <Text style={styles.ringNumber}>{myPoints}</Text>
-              <Text style={styles.ringDenom}>
-                of {maxWeeklyPoints || "—"} pts
-              </Text>
-            </View>
+  const renderBarChartSlide = () => (
+    <Pressable
+      onPress={() => onExpand?.(1)}
+      style={[styles.slide, { width: slideWidth }]}
+    >
+      <View style={styles.card}>
+        <Text style={styles.cardOverline}>Points by member</Text>
+        {sortedLb.length === 0 ? (
+          <View style={styles.centered}>
+            <Text style={styles.emptyText}>Nothing to chart yet</Text>
           </View>
-          <Text style={styles.ringHelper}>
-            {Math.round(pct * 100)}% of weekly ceiling
-          </Text>
-        </Pressable>
-      </Animated.View>
+        ) : (
+          <View style={styles.chartRow}>
+            {sortedLb.map((row) => {
+              const isMe = row.userId === myUserId;
+              const targetH = Math.max(
+                4,
+                (row.points / maxBarPts) * CHART_HEIGHT,
+              );
+              const h = barsAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [4, targetH],
+              });
+              const fillColors: readonly [string, string] = isMe
+                ? [Colors.brand.green, Colors.brand.green]
+                : [Colors.toggleOff, Colors.bg.cardActive];
+              return (
+                <View key={row.userId} style={styles.chartCol}>
+                  <Text
+                    style={[
+                      styles.chartValue,
+                      isMe && { color: Colors.brand.greenBright },
+                    ]}
+                  >
+                    {row.points}
+                  </Text>
+                  <View style={styles.chartCellWrap}>
+                    <Animated.View
+                      style={[
+                        styles.chartBar,
+                        { height: h },
+                        isMe && styles.chartBarMe,
+                      ]}
+                    >
+                      <LinearGradient
+                        colors={
+                          fillColors as unknown as readonly [
+                            string,
+                            string,
+                            ...string[],
+                          ]
+                        }
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 0, y: 1 }}
+                        style={StyleSheet.absoluteFill}
+                      />
+                    </Animated.View>
+                  </View>
+                  <Text
+                    style={[
+                      styles.chartLabel,
+                      isMe && {
+                        color: Colors.text.primary,
+                        fontWeight: "600",
+                      },
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {row.name}
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
+        )}
+      </View>
+    </Pressable>
+  );
+
+  const renderYourWeekSlide = () => {
+    const series = (myUserId && weeklyByUserDay[myUserId]) || [];
+    const rankChipColor =
+      myRank === 1
+        ? Colors.accent.gold
+        : myRank === 2
+          ? Colors.accent.silver
+          : myRank === 3
+            ? Colors.accent.bronze
+            : Colors.text.primary;
+    const lastDay = Math.min(SPARK_DAYS, Math.max(1, daysElapsed));
+    const dailyPts: number[] = [];
+    for (let d = 0; d < SPARK_DAYS; d++) {
+      const cum = series[d] ?? 0;
+      const prev = d === 0 ? 0 : (series[d - 1] ?? 0);
+      dailyPts.push(Math.max(0, cum - prev));
+    }
+    const sparkMax = Math.max(...dailyPts, 1);
+
+    return (
+      <Pressable
+        onPress={() => onExpand?.(2)}
+        style={[styles.slide, { width: slideWidth }]}
+      >
+        <View style={styles.card}>
+          <Text style={styles.cardOverline}>Your week</Text>
+          <View style={styles.weekHeroRow}>
+            <Text style={styles.weekHeroNumber}>{myPoints}</Text>
+            <Text style={styles.weekHeroLabel}>pts this week</Text>
+          </View>
+          <View style={styles.weekChipRow}>
+            {myRank ? (
+              <View
+                style={[styles.rankPill, { backgroundColor: rankChipColor }]}
+              >
+                <Text style={styles.rankPillText}>RANK #{myRank}</Text>
+              </View>
+            ) : null}
+            <Text style={styles.weekHint}>
+              {myRank == null
+                ? "Mark a task to enter the week"
+                : gap > 0
+                  ? `${gap} pts behind ${leader?.name}`
+                  : "Leading the week"}
+            </Text>
+          </View>
+
+          <View style={styles.sparkRow}>
+            {dailyPts.map((v, i) => {
+              const ratio = v / sparkMax;
+              const targetH = Math.max(4, ratio * 36);
+              const h = barsAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [4, targetH],
+              });
+              const elapsed = i < lastDay;
+              return (
+                <View key={i} style={styles.sparkCol}>
+                  <View style={styles.sparkCellWrap}>
+                    <Animated.View
+                      style={[
+                        styles.sparkBar,
+                        { height: h },
+                        elapsed
+                          ? { backgroundColor: Colors.brand.greenBright }
+                          : { backgroundColor: Colors.bg.cardActive },
+                      ]}
+                    />
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+          <View style={styles.sparkLabels}>
+            {DAY_LETTERS.map((d, i) => (
+              <Text key={i} style={styles.sparkLabelText}>
+                {d}
+              </Text>
+            ))}
+          </View>
+        </View>
+      </Pressable>
     );
   };
 
@@ -494,10 +384,9 @@ export function LeaderboardWidget({
         scrollEventThrottle={16}
         overScrollMode="never"
       >
-        {renderListSlide()}
-        {renderBarsSlide()}
-        {renderLineSlide()}
-        {renderRingSlide()}
+        {renderTopThreeSlide()}
+        {renderBarChartSlide()}
+        {renderYourWeekSlide()}
       </Animated.ScrollView>
 
       <View style={styles.dotsRow}>
@@ -518,13 +407,13 @@ const styles = StyleSheet.create({
   },
   card: {
     backgroundColor: Colors.bg.card,
-    padding: 20,
-    borderRadius: Radius.card,
+    padding: 18,
+    borderRadius: Radius.card + 2,
     gap: 14,
-    height: CARD_HEIGHT,
     overflow: "hidden",
   },
   centered: {
+    paddingVertical: 28,
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
@@ -535,39 +424,54 @@ const styles = StyleSheet.create({
     letterSpacing: 1.2,
   },
 
-  listGap: {
-    gap: 14,
-  },
-  listRow: {
+  // Slide 1 — top three
+  topThreeList: { gap: 14 },
+  topThreeRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 14,
+    gap: 12,
   },
-  medal: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+  rankChip: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
+    shadowOpacity: 0.55,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
   },
-  medalText: {
-    ...Typography.section,
-    fontSize: 14,
-    color: Colors.text.primary,
+  rankChipText: {
+    fontSize: 13,
     fontWeight: "700",
-  },
-  medalTextTop: {
     color: Colors.bg.base,
   },
-  listBody: { flex: 1, gap: 6 },
-  listTopRow: {
+  topThreeBody: {
+    flex: 1,
+    gap: 8,
+    minWidth: 0,
+  },
+  topThreeHead: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "baseline",
-    gap: 10,
+    gap: 8,
   },
-  listName: { ...Typography.body, fontWeight: "600", flex: 1 },
-  listPts: { ...Typography.label },
+  topThreeName: {
+    ...Typography.body,
+    fontSize: 15,
+    fontWeight: "600",
+    flexShrink: 1,
+  },
+  youInline: {
+    color: Colors.text.secondary,
+    fontWeight: "400",
+  },
+  topThreePts: {
+    ...Typography.caption,
+    fontSize: 13,
+  },
   barTrack: {
     height: 4,
     borderRadius: 2,
@@ -576,120 +480,135 @@ const styles = StyleSheet.create({
   },
   barFill: { height: "100%", borderRadius: 2, overflow: "hidden" },
 
-  barsRow: {
+  // Slide 2 — bar chart
+  chartRow: {
     flexDirection: "row",
-    alignItems: "flex-end",
     justifyContent: "space-between",
+    alignItems: "flex-end",
     gap: 10,
-    height: 200,
+    height: CHART_HEIGHT + 36,
   },
-  barCol: {
+  chartCol: {
     flex: 1,
     alignItems: "center",
     gap: 6,
-    height: "100%",
   },
-  barValue: {
-    ...Typography.caption,
+  chartValue: {
+    fontSize: 11,
     fontWeight: "600",
-    color: Colors.text.primary,
+    color: Colors.text.secondary,
   },
-  barWell: {
-    flex: 1,
+  chartCellWrap: {
     width: "100%",
-    backgroundColor: Colors.progressTrack,
-    borderRadius: 8,
-    overflow: "hidden",
+    height: CHART_HEIGHT,
     justifyContent: "flex-end",
   },
-  barPillar: {
+  chartBar: {
     width: "100%",
-    borderRadius: 8,
+    borderRadius: 6,
     overflow: "hidden",
   },
-  barLabel: {
-    ...Typography.caption,
+  chartBarMe: {
+    shadowColor: Colors.brand.green,
+    shadowOpacity: 0.6,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 4,
+  },
+  chartLabel: {
+    fontSize: 11,
+    color: Colors.text.secondary,
     width: "100%",
     textAlign: "center",
   },
 
-  lineWrap: {
-    alignItems: "center",
-    gap: 6,
+  // Slide 3 — your week
+  weekHeroRow: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    gap: 10,
   },
-  lineLabels: {
+  weekHeroNumber: {
+    fontSize: 56,
+    fontWeight: "800",
+    letterSpacing: -2,
+    lineHeight: 56,
+    color: Colors.text.primary,
+  },
+  weekHeroLabel: {
+    fontSize: 14,
+    color: Colors.text.secondary,
+  },
+  weekChipRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  rankPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+  },
+  rankPillText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: Colors.bg.base,
+    letterSpacing: 0.4,
+  },
+  weekHint: {
+    fontSize: 12,
+    color: Colors.text.secondary,
+  },
+  sparkRow: {
+    flexDirection: "row",
+    gap: 4,
+    height: 36,
+    alignItems: "flex-end",
+    marginTop: 4,
+  },
+  sparkCol: {
+    flex: 1,
+    height: "100%",
+    justifyContent: "flex-end",
+  },
+  sparkCellWrap: {
+    width: "100%",
+    height: "100%",
+    justifyContent: "flex-end",
+  },
+  sparkBar: {
+    width: "100%",
+    borderRadius: 3,
+  },
+  sparkLabels: {
     flexDirection: "row",
     justifyContent: "space-between",
   },
-  lineLabel: {
-    ...Typography.caption,
+  sparkLabelText: {
     flex: 1,
     textAlign: "center",
-  },
-  lineLabelMe: {
-    color: Colors.brand.greenBright,
-    fontWeight: "600",
-  },
-  lineHelper: {
-    ...Typography.caption,
-  },
-
-  ringCard: {
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  ringWrap: {
-    width: RING_SIZE,
-    height: RING_SIZE,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  axisLabel: {
-    ...Typography.caption,
-    textAlign: "center",
-    marginTop: 2,
-  },
-  ringLabel: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 2,
-  },
-  ringNumber: {
-    ...Typography.display,
-    fontSize: 48,
-    letterSpacing: -0.8,
-    lineHeight: 52,
-  },
-  ringDenom: {
-    ...Typography.caption,
-  },
-  ringHelper: {
-    ...Typography.label,
+    fontSize: 10,
+    color: Colors.text.secondary,
   },
 
   dotsRow: {
     flexDirection: "row",
     justifyContent: "center",
     gap: 6,
-    marginTop: 12,
+    marginTop: 14,
   },
   dot: {
-    width: 6,
-    height: 6,
+    width: 5,
+    height: 5,
     borderRadius: 3,
     backgroundColor: Colors.toggleOff,
   },
   dotActive: {
-    width: 22,
+    width: 18,
     backgroundColor: Colors.text.primary,
   },
 
-  emptyInline: {
-    paddingVertical: 8,
-    alignItems: "center",
-    gap: 4,
-  },
   emptyText: { ...Typography.label },
   emptyTitle: { ...Typography.body, fontWeight: "600" },
   emptyHelper: { ...Typography.label, textAlign: "center" },

@@ -11,6 +11,7 @@ import {
   Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Svg, { Circle as SvgCircle } from "react-native-svg";
@@ -74,6 +75,9 @@ export default function UserHome() {
   const [todayTasks, setTodayTasks] = useState<TodayTaskItem[]>([]);
   const [weeklyPoints, setWeeklyPoints] = useState<number>(0);
   const [circleCount, setCircleCount] = useState<number>(0);
+  const [myCircles, setMyCircles] = useState<{ id: string; name: string }[]>(
+    [],
+  );
   const [showAllTasks, setShowAllTasks] = useState<boolean>(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [completing, setCompleting] = useState(false);
@@ -208,6 +212,7 @@ export default function UserHome() {
           setTodayTasks([]);
           setWeeklyPoints(0);
           setCircleCount(0);
+          setMyCircles([]);
           setLoading(false);
           return;
         }
@@ -225,6 +230,7 @@ export default function UserHome() {
           setTodayTasks([]);
           setWeeklyPoints(0);
           setCircleCount(0);
+          setMyCircles([]);
           setLoading(false);
           return;
         }
@@ -259,6 +265,7 @@ export default function UserHome() {
           setTodayTasks([]);
           setWeeklyPoints(0);
           setCircleCount(0);
+          setMyCircles([]);
           setLoadError(null);
           setLoading(false);
           return;
@@ -356,15 +363,16 @@ export default function UserHome() {
           }
         }
 
-        const preferredTitlesByCat = await loadPreferredSubtaskTitlesByCategoryId(
-          uid,
-          categoryIds
-            .map((categoryId) => ({
-              id: categoryId,
-              name: categoryById[categoryId]?.name ?? "",
-            }))
-            .filter((category) => category.name.length > 0),
-        );
+        const preferredTitlesByCat =
+          await loadPreferredSubtaskTitlesByCategoryId(
+            uid,
+            categoryIds
+              .map((categoryId) => ({
+                id: categoryId,
+                name: categoryById[categoryId]?.name ?? "",
+              }))
+              .filter((category) => category.name.length > 0),
+          );
 
         type SubtaskRow = {
           id: string;
@@ -375,7 +383,9 @@ export default function UserHome() {
         let subtasks: SubtaskRow[] = [];
         const subtaskCategoryIds = Array.from(
           new Set(
-            Object.values(categoryById).flatMap((category) => category.sourceIds),
+            Object.values(categoryById).flatMap(
+              (category) => category.sourceIds,
+            ),
           ),
         );
         if (subtaskCategoryIds.length > 0) {
@@ -505,17 +515,22 @@ export default function UserHome() {
         setTodayTasks(nextTasks);
         setWeeklyPoints(myTotal);
         setCircleCount(circles.length);
+        setMyCircles(
+          circles.map((c) => ({
+            id: c.id,
+            name: circleNameById[c.id] ?? "Circle",
+          })),
+        );
         setLoadError(null);
         setLoading(false);
       } catch (error) {
         if (!alive) return;
         const message =
-          error instanceof Error
-            ? error.message
-            : "Could not load your tasks.";
+          error instanceof Error ? error.message : "Could not load your tasks.";
         setTodayTasks([]);
         setWeeklyPoints(0);
         setCircleCount(0);
+        setMyCircles([]);
         setLoadError(message);
         setLoading(false);
       } finally {
@@ -634,6 +649,50 @@ export default function UserHome() {
             </View>
             <Text style={styles.weekValue}>{weeklyPoints}</Text>
           </View>
+
+          {myCircles.length > 0 ? (
+            <View style={styles.section}>
+              <View style={styles.sectionHead}>
+                <Text style={styles.sectionTitle}>Your circles</Text>
+                <Text style={styles.sectionMeta}>{myCircles.length}</Text>
+              </View>
+              <View style={styles.circleList}>
+                {myCircles.map((c) => (
+                  <Pressable
+                    key={c.id}
+                    onPress={async () => {
+                      await AsyncStorage.setItem("activeCircleId", c.id);
+                      await AsyncStorage.setItem("activeCircleName", c.name);
+                      router.push("/circle-home");
+                    }}
+                    style={({ pressed }) => [
+                      styles.circleRow,
+                      pressed && styles.circleRowPressed,
+                    ]}
+                  >
+                    <View style={styles.circleBadge}>
+                      <Text style={styles.circleBadgeText}>
+                        {c.name.trim().charAt(0).toUpperCase() || "?"}
+                      </Text>
+                    </View>
+                    <View style={styles.circleRowText}>
+                      <Text style={styles.circleRowName} numberOfLines={1}>
+                        {c.name}
+                      </Text>
+                      <Text style={styles.circleRowSub} numberOfLines={1}>
+                        Tap to open
+                      </Text>
+                    </View>
+                    <Ionicons
+                      name="chevron-forward"
+                      size={18}
+                      color={Colors.text.secondary}
+                    />
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          ) : null}
 
           <View style={styles.section}>
             <View style={styles.sectionHead}>
@@ -1022,5 +1081,43 @@ const styles = StyleSheet.create({
   emptyHelper: {
     ...Typography.label,
     textAlign: "center",
+  },
+  circleList: {
+    gap: Spacing.rowGap,
+  },
+  circleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.inlineGap + 4,
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.card,
+    padding: Spacing.cardPadding,
+  },
+  circleRowPressed: {
+    backgroundColor: Colors.bg.cardActive,
+  },
+  circleBadge: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: Colors.brand.green,
+  },
+  circleBadgeText: {
+    fontSize: 20,
+    fontWeight: "700",
+    color: Colors.bg.base,
+  },
+  circleRowText: {
+    flex: 1,
+    gap: 2,
+  },
+  circleRowName: {
+    ...Typography.body,
+    fontWeight: "600",
+  },
+  circleRowSub: {
+    ...Typography.label,
   },
 });

@@ -13,12 +13,7 @@ import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "../src/lib/supabase";
-import {
-  Colors,
-  Radius,
-  Spacing,
-  Typography,
-} from "../src/constants/design";
+import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
 
 const POLL_MS = 3000;
 const POINTS_PER_TASK = 5;
@@ -30,7 +25,9 @@ type LeaderRow = {
 };
 
 function startOfWeekUTC(d = new Date()) {
-  const x = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const x = new Date(
+    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()),
+  );
   const day = x.getUTCDay();
   const daysSinceMonday = (day + 6) % 7;
   x.setUTCDate(x.getUTCDate() - daysSinceMonday);
@@ -133,7 +130,8 @@ export default function Leaderboard() {
         if (rows) {
           for (const r of rows as unknown as CompletionPts[]) {
             const id = String(r.user_id);
-            byUser[id] = (byUser[id] ?? 0) + (Number(r.points) || POINTS_PER_TASK);
+            byUser[id] =
+              (byUser[id] ?? 0) + (Number(r.points) || POINTS_PER_TASK);
           }
         }
 
@@ -238,9 +236,7 @@ export default function Leaderboard() {
                   <Text style={styles.heroRank}>#{myRow.rank}</Text>
                   <View style={styles.heroRankMeta}>
                     <Text style={styles.heroLabel}>Your spot</Text>
-                    <Text style={styles.heroPts}>
-                      {myRow.row.points} pts
-                    </Text>
+                    <Text style={styles.heroPts}>{myRow.row.points} pts</Text>
                   </View>
                 </View>
                 {gapToLeader > 0 ? (
@@ -323,12 +319,16 @@ export default function Leaderboard() {
                       </View>
 
                       <View style={styles.rowText}>
-                        <Text style={styles.rowName} numberOfLines={1}>
-                          {row.name}
+                        <View style={styles.rowNameLine}>
+                          <Text style={styles.rowName} numberOfLines={1}>
+                            {row.name}
+                          </Text>
                           {isMe ? (
-                            <Text style={styles.rowMeTag}> · you</Text>
+                            <View style={styles.youPill}>
+                              <Text style={styles.youPillText}>YOU</Text>
+                            </View>
                           ) : null}
-                        </Text>
+                        </View>
                         <Text style={styles.rowSub}>
                           {row.points} {row.points === 1 ? "pt" : "pts"}
                         </Text>
@@ -448,6 +448,25 @@ const styles = StyleSheet.create({
   },
   rowMe: {
     backgroundColor: Colors.bg.card,
+    borderWidth: 1,
+    borderColor: Colors.brand.green,
+  },
+  rowNameLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  youPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 999,
+    backgroundColor: Colors.brand.green,
+  },
+  youPillText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: Colors.bg.base,
+    letterSpacing: 0.6,
   },
   medal: {
     width: 36,

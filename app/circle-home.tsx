@@ -103,10 +103,14 @@ export default function CircleHome() {
   const [expandedSlide, setExpandedSlide] = useState<number | null>(null);
   const [activityOpen, setActivityOpen] = useState(false);
   const [anchorMsState, setAnchorMsState] = useState<number | null>(null);
+  const [pulseKeys, setPulseKeys] = useState<Set<string>>(new Set());
+  const [justEarned, setJustEarned] = useState<number | null>(null);
+  const [confettiBurstId, setConfettiBurstId] = useState<number>(0);
 
   const inFlightRef = useRef(false);
   const initialLoadedRef = useRef(false);
   const mountAnim = useRef(new Animated.Value(0)).current;
+  const toastAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     Animated.timing(mountAnim, {
@@ -296,15 +300,16 @@ export default function CircleHome() {
           }
         }
 
-        const preferredTitlesByCat = await loadPreferredSubtaskTitlesByCategoryId(
-          uid,
-          myCategoryIds
-            .map((categoryId) => ({
-              id: categoryId,
-              name: categoryById[categoryId]?.name ?? "",
-            }))
-            .filter((category) => category.name.length > 0),
-        );
+        const preferredTitlesByCat =
+          await loadPreferredSubtaskTitlesByCategoryId(
+            uid,
+            myCategoryIds
+              .map((categoryId) => ({
+                id: categoryId,
+                name: categoryById[categoryId]?.name ?? "",
+              }))
+              .filter((category) => category.name.length > 0),
+          );
 
         // All subtasks for the user's selected categories, sliced to circle's daily_task_count.
         const subtaskById: Record<
@@ -316,7 +321,9 @@ export default function CircleHome() {
         const orderedSubtaskIds: string[] = [];
         const subtaskCategoryIds = Array.from(
           new Set(
-            Object.values(categoryById).flatMap((category) => category.sourceIds),
+            Object.values(categoryById).flatMap(
+              (category) => category.sourceIds,
+            ),
           ),
         );
         if (subtaskCategoryIds.length > 0) {
@@ -606,7 +613,9 @@ export default function CircleHome() {
       } catch (error) {
         if (!alive) return;
         const message =
-          error instanceof Error ? error.message : "Could not load this circle.";
+          error instanceof Error
+            ? error.message
+            : "Could not load this circle.";
         setTasks([]);
         setLeaderboard([]);
         setMyWeekPoints(0);
@@ -708,7 +717,19 @@ export default function CircleHome() {
           (a, b) => b.points - a.points || a.name.localeCompare(b.name),
         );
       });
+      const completedKeys = new Set(selected);
+      setPulseKeys(completedKeys);
       setSelected(new Set());
+      setJustEarned(earned);
+      setConfettiBurstId((id) => id + 1);
+      toastAnim.setValue(0);
+      Animated.timing(toastAnim, {
+        toValue: 1,
+        duration: 1600,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start(() => setJustEarned(null));
+      setTimeout(() => setPulseKeys(new Set()), 900);
     } finally {
       setCompleting(false);
     }
@@ -775,23 +796,16 @@ export default function CircleHome() {
             ) : (
               <Pressable
                 onPress={() => setActivityOpen(true)}
-                style={styles.chatCard}
+                style={styles.feedCard}
               >
-                {activity.slice(0, 4).map((a) => (
-                  <View key={a.id} style={styles.chatBubble}>
-                    <Text style={styles.chatLine} numberOfLines={2}>
-                      <Text style={styles.chatName}>{a.name}</Text>
-                      {" completed "}
-                      <Text style={styles.chatTask}>{a.subtaskTitle}</Text>
-                      {a.categoryName ? (
-                        <>
-                          {" in "}
-                          <Text style={styles.chatTask}>{a.categoryName}</Text>
-                        </>
-                      ) : null}
-                    </Text>
-                    <Text style={styles.chatTime}>{relativeTime(a.at)}</Text>
-                  </View>
+                <View style={styles.feedRail} />
+                {activity.slice(0, 4).map((a, i) => (
+                  <ActivityFeedRow
+                    key={a.id}
+                    row={a}
+                    index={i}
+                    isMostRecent={i === 0}
+                  />
                 ))}
                 {activity.length > 4 && (
                   <Text style={styles.chatMore}>
@@ -824,6 +838,7 @@ export default function CircleHome() {
               <View style={styles.taskList}>
                 {visibleTasks.map((t) => {
                   const isSelected = selected.has(t.key);
+                  const pulsing = pulseKeys.has(t.key);
                   return (
                     <Pressable
                       key={t.key}
@@ -832,6 +847,7 @@ export default function CircleHome() {
                       style={({ pressed }) => [
                         styles.taskRow,
                         pressed && !t.done && styles.taskRowPressed,
+                        pulsing && styles.taskRowPulse,
                       ]}
                     >
                       <Text
@@ -918,6 +934,35 @@ export default function CircleHome() {
               )}
             </Pressable>
           </View>
+        ) : null}
+
+        {confettiBurstId > 0 ? (
+          <ConfettiBurst burstId={confettiBurstId} />
+        ) : null}
+
+        {justEarned !== null ? (
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.toast,
+              {
+                opacity: toastAnim.interpolate({
+                  inputRange: [0, 0.1, 0.85, 1],
+                  outputRange: [0, 1, 1, 0],
+                }),
+                transform: [
+                  {
+                    translateY: toastAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [10, -40],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          >
+            <Text style={styles.toastText}>+{justEarned} pts</Text>
+          </Animated.View>
         ) : null}
 
         <TabBar active="circles" />
@@ -1026,6 +1071,230 @@ export default function CircleHome() {
         </Pressable>
       </Modal>
     </SafeAreaView>
+  );
+}
+
+const ACTIVITY_AVATAR_PALETTE = [
+  Colors.accent.gold,
+  Colors.accent.blue,
+  Colors.accent.pink,
+  Colors.brand.greenBright,
+  Colors.accent.silver,
+];
+
+function colorForName(name: string): string {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) {
+    h = (h + name.charCodeAt(i) * 31) % ACTIVITY_AVATAR_PALETTE.length;
+  }
+  return ACTIVITY_AVATAR_PALETTE[h];
+}
+
+function ActivityFeedRow({
+  row,
+  index,
+  isMostRecent,
+}: {
+  row: ActivityRow;
+  index: number;
+  isMostRecent: boolean;
+}) {
+  const enter = useRef(new Animated.Value(0)).current;
+  const pulse = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(enter, {
+      toValue: 1,
+      duration: 380,
+      delay: index * 70,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [enter, index]);
+
+  useEffect(() => {
+    if (!isMostRecent) return;
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 800,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 0,
+          duration: 800,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [isMostRecent, pulse]);
+
+  const avatarColor = colorForName(row.name || "?");
+  const initial = (row.name || "?").trim().slice(0, 1).toUpperCase();
+
+  return (
+    <Animated.View
+      style={[
+        styles.feedRow,
+        {
+          opacity: enter,
+          transform: [
+            {
+              translateY: enter.interpolate({
+                inputRange: [0, 1],
+                outputRange: [10, 0],
+              }),
+            },
+          ],
+        },
+      ]}
+    >
+      <View style={styles.feedAvatarWrap}>
+        <View style={[styles.feedAvatar, { backgroundColor: avatarColor }]}>
+          <Text style={styles.feedAvatarText}>{initial}</Text>
+        </View>
+        {isMostRecent ? (
+          <Animated.View
+            style={[
+              styles.feedLiveDot,
+              {
+                opacity: pulse.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0.55, 1],
+                }),
+                transform: [
+                  {
+                    scale: pulse.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0.85, 1.15],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          />
+        ) : null}
+      </View>
+      <View style={styles.feedBody}>
+        <View style={styles.feedHeadRow}>
+          <Text style={styles.feedName}>{row.name}</Text>
+          <Text style={styles.feedTime}>{relativeTime(row.at)}</Text>
+        </View>
+        <Text style={styles.feedTask} numberOfLines={2}>
+          {row.subtaskTitle}
+        </Text>
+        {row.categoryName ? (
+          <View style={styles.feedChip}>
+            <View
+              style={[styles.feedChipDot, { backgroundColor: avatarColor }]}
+            />
+            <Text style={styles.feedChipText}>
+              {row.categoryName} · +{POINTS_PER_TASK}
+            </Text>
+          </View>
+        ) : null}
+      </View>
+    </Animated.View>
+  );
+}
+
+const CONFETTI_COLORS = [
+  Colors.accent.gold,
+  Colors.brand.greenBright,
+  Colors.brand.green,
+  Colors.accent.blue,
+  Colors.accent.pink,
+  Colors.accent.silver,
+];
+
+type ConfettiParticle = {
+  id: string;
+  dx: number;
+  dy: number;
+  rot: number;
+  color: string;
+  size: number;
+  delay: number;
+  duration: number;
+  shape: number;
+};
+
+function ConfettiBurst({ burstId }: { burstId: number }) {
+  const [particles, setParticles] = useState<ConfettiParticle[]>([]);
+  const anim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const next: ConfettiParticle[] = Array.from({ length: 24 }, (_, i) => {
+      const angle = -Math.PI * (0.15 + Math.random() * 0.7);
+      const dist = 90 + Math.random() * 140;
+      return {
+        id: `${burstId}-${i}`,
+        dx: Math.cos(angle) * dist + (Math.random() - 0.5) * 60,
+        dy: Math.sin(angle) * dist,
+        rot: (Math.random() - 0.5) * 720,
+        color: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
+        size: 6 + Math.random() * 6,
+        delay: Math.random() * 80,
+        duration: 900 + Math.random() * 500,
+        shape: i % 3,
+      };
+    });
+    setParticles(next);
+    anim.setValue(0);
+    Animated.timing(anim, {
+      toValue: 1,
+      duration: 1500,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start(() => setParticles([]));
+  }, [burstId, anim]);
+
+  if (particles.length === 0) return null;
+
+  return (
+    <View pointerEvents="none" style={styles.confettiAnchor}>
+      {particles.map((p) => (
+        <Animated.View
+          key={p.id}
+          style={{
+            position: "absolute",
+            width: p.size,
+            height: p.shape === 0 ? p.size : p.size * 0.4,
+            backgroundColor: p.color,
+            borderRadius: p.shape === 2 ? p.size : 1,
+            opacity: anim.interpolate({
+              inputRange: [0, 0.1, 0.85, 1],
+              outputRange: [0, 1, 1, 0],
+            }),
+            transform: [
+              {
+                translateX: anim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, p.dx],
+                }),
+              },
+              {
+                translateY: anim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, p.dy],
+                }),
+              },
+              {
+                rotate: anim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: ["0deg", `${p.rot}deg`],
+                }),
+              },
+            ],
+          }}
+        />
+      ))}
+    </View>
   );
 }
 
@@ -1159,6 +1428,124 @@ const styles = StyleSheet.create({
   },
   taskRowPressed: {
     backgroundColor: Colors.bg.cardActive,
+  },
+  taskRowPulse: {
+    backgroundColor: "rgba(57, 211, 83, 0.18)",
+  },
+  feedCard: {
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.card,
+    paddingVertical: 6,
+    paddingHorizontal: 0,
+    overflow: "hidden",
+    position: "relative",
+  },
+  feedRail: {
+    position: "absolute",
+    left: 36,
+    top: 18,
+    bottom: 18,
+    width: 1.5,
+    backgroundColor: Colors.border,
+  },
+  feedRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+  },
+  feedAvatarWrap: {
+    width: 36,
+    height: 36,
+    position: "relative",
+  },
+  feedAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: Colors.bg.card,
+  },
+  feedAvatarText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#0a0a0a",
+  },
+  feedLiveDot: {
+    position: "absolute",
+    top: -2,
+    right: -2,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: Colors.brand.greenBright,
+    borderWidth: 2,
+    borderColor: Colors.bg.card,
+  },
+  feedBody: { flex: 1, minWidth: 0, gap: 2 },
+  feedHeadRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+    gap: 8,
+  },
+  feedName: { ...Typography.body, fontSize: 14, fontWeight: "700" },
+  feedTime: { ...Typography.caption, fontSize: 11 },
+  feedTask: {
+    ...Typography.body,
+    fontSize: 14,
+    lineHeight: 19,
+    marginTop: 2,
+  },
+  feedChip: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginTop: 6,
+    backgroundColor: Colors.bg.cardActive,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+  },
+  feedChipDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  feedChipText: {
+    ...Typography.caption,
+    fontSize: 11,
+    fontWeight: "600",
+    color: Colors.text.secondary,
+  },
+  confettiAnchor: {
+    position: "absolute",
+    left: "50%",
+    bottom: 200,
+    width: 0,
+    height: 0,
+    zIndex: 7,
+  },
+  toast: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 160,
+    alignItems: "center",
+    zIndex: 8,
+  },
+  toastText: {
+    fontSize: 22,
+    fontWeight: "800",
+    letterSpacing: -0.5,
+    color: Colors.brand.greenBright,
+    textShadowColor: Colors.brand.greenBright,
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 12,
   },
   taskTitle: {
     ...Typography.body,
