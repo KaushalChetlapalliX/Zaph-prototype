@@ -16,6 +16,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import Svg, { Circle as SvgCircle } from "react-native-svg";
 import { supabase } from "../src/lib/supabase";
 import { buildAssignedCategoryLookup } from "../src/lib/categories";
+import { ensureProfileFromAuthUser } from "../src/lib/profile";
 import { TabBar } from "../src/components/TabBar";
 import { Colors, Radius, Spacing, Typography } from "../src/constants/design";
 import { taskCountForAssignedCategory } from "../src/lib/circle-flow";
@@ -158,15 +159,10 @@ export default function UserHome() {
       if (!user) return;
 
       const uid = user.id;
-
-      let next = "";
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("first_name")
-        .eq("id", uid)
-        .maybeSingle();
+      const { profile } = await ensureProfileFromAuthUser(user);
 
       const profileRow = (profile ?? {}) as { first_name?: string | null };
+      let next = "";
       if (profileRow.first_name && profileRow.first_name.trim()) {
         next = profileRow.first_name.trim();
       }
@@ -419,6 +415,7 @@ export default function UserHome() {
         }
 
         const nextTasks: TodayTaskItem[] = [];
+        const nextTaskKeys = new Set<string>();
         for (const sel of selList) {
           const circleId = String(sel.circle_id);
           const categoryId = String(sel.category_id);
@@ -467,6 +464,8 @@ export default function UserHome() {
             const title = String(st.title ?? "").trim();
             if (!title) continue;
             const key = `${circleId}:${subtaskId}`;
+            if (nextTaskKeys.has(key)) continue;
+            nextTaskKeys.add(key);
             nextTasks.push({
               key,
               circleId,

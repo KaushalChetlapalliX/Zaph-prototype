@@ -1,6 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { STORAGE_KEYS } from "../constants/storage";
 import { buildCanonicalCategoryMap } from "./categories";
+import { ensureProfileFromAuthUser } from "./profile";
 import { supabase } from "./supabase";
 import {
   computeCategoryScores,
@@ -297,12 +298,51 @@ async function persistCircleSelectionsForUser(
   if (memberErr) throw new Error(memberErr.message);
 }
 
+async function syncCircleMemberProfileFields(
+  circleId: string,
+  user: {
+    email?: string | null;
+    id: string;
+    user_metadata?: Record<string, unknown> | null;
+  },
+): Promise<void> {
+  const { profile } = await ensureProfileFromAuthUser(user);
+  const typed = (profile ?? {}) as {
+    display_name?: string | null;
+    first_name?: string | null;
+    last_name?: string | null;
+  };
+  const firstName = String(typed.first_name ?? "").trim();
+  const lastName = String(typed.last_name ?? "").trim();
+  const displayName =
+    String(typed.display_name ?? "").trim() ||
+    [firstName, lastName].filter(Boolean).join(" ");
+
+  if (!firstName && !displayName) return;
+
+  const { error } = await supabase
+    .from("circle_members")
+    .update({
+      display_name: displayName,
+      first_name: firstName || null,
+      last_name: lastName || null,
+    })
+    .eq("circle_id", circleId)
+    .eq("user_id", user.id);
+
+  if (error) throw new Error(error.message);
+}
+
 export async function syncCircleSelectionsForCurrentUser(
   circleId: string,
 ): Promise<void> {
   const { data: userData } = await supabase.auth.getUser();
-  const userId = userData.user?.id;
-  if (!userId) throw new Error("You need to be logged in to join a circle.");
+  const user = userData.user;
+  const userId = user?.id;
+  if (!user || !userId)
+    throw new Error("You need to be logged in to join a circle.");
+
+  await syncCircleMemberProfileFields(circleId, user);
 
   const { data: circleRow } = await supabase
     .from("circles")
@@ -324,8 +364,11 @@ export async function forceSyncCircleSelectionsForCurrentUser(
   circleId: string,
 ): Promise<void> {
   const { data: userData } = await supabase.auth.getUser();
-  const userId = userData.user?.id;
-  if (!userId) throw new Error("You need to be logged in to continue.");
+  const user = userData.user;
+  const userId = user?.id;
+  if (!user || !userId) throw new Error("You need to be logged in to continue.");
+
+  await syncCircleMemberProfileFields(circleId, user);
 
   await runCircleSelectionSync(circleId, userId, () =>
     persistCircleSelectionsForUser(circleId, userId),

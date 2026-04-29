@@ -312,6 +312,7 @@ export default function CircleHome() {
           { id: string; categoryId: string; title: string; sortOrder: number }
         > = {};
         const assignedCategoryIdBySubtaskId: Record<string, string> = {};
+        const orderedSubtaskIdSet = new Set<string>();
         const orderedSubtaskIds: string[] = [];
         const subtaskCategoryIds = Array.from(
           new Set(
@@ -386,6 +387,8 @@ export default function CircleHome() {
                 })
               : list;
             for (const item of sorted.slice(0, perCategory)) {
+              if (orderedSubtaskIdSet.has(item.id)) continue;
+              orderedSubtaskIdSet.add(item.id);
               assignedCategoryIdBySubtaskId[item.id] = catId;
               orderedSubtaskIds.push(item.id);
             }

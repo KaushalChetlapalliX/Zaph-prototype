@@ -9,6 +9,7 @@ import {
 import { router } from "expo-router";
 import * as Linking from "expo-linking";
 import { supabase } from "../../src/lib/supabase";
+import { ensureProfileFromAuthUser } from "../../src/lib/profile";
 import { Colors, Spacing, Typography } from "../../src/constants/design";
 
 function readAuthParams(rawUrl: string): Record<string, string> {
@@ -45,15 +46,15 @@ function readAuthParams(rawUrl: string): Record<string, string> {
 export default function AuthCallback() {
   useEffect(() => {
     const run = async () => {
-      const routeForSession = async (userId: string) => {
-        const { data: profileRow } = await supabase
-          .from("profiles")
-          .select("questionnaire_completed")
-          .eq("id", userId)
-          .maybeSingle();
+      const routeForSession = async (user: {
+        email?: string | null;
+        id: string;
+        user_metadata?: Record<string, unknown> | null;
+      }) => {
+        const { profile } = await ensureProfileFromAuthUser(user);
 
         const completed =
-          (profileRow as { questionnaire_completed?: boolean } | null)
+          (profile as { questionnaire_completed?: boolean } | null)
             ?.questionnaire_completed === true;
 
         router.replace(completed ? "/user-home" : "/questionnaire");
@@ -127,13 +128,13 @@ export default function AuthCallback() {
           );
         }
 
-        const existingUserId = existingSession.session?.user?.id;
-        if (existingUserId) {
+        const existingUser = existingSession.session?.user;
+        if (existingUser) {
           console.log(
             "[google-oauth] reusing existing session after callback without params:",
-            existingUserId,
+            existingUser.id,
           );
-          await routeForSession(existingUserId);
+          await routeForSession(existingUser);
           return;
         }
 
@@ -157,8 +158,8 @@ export default function AuthCallback() {
         return;
       }
 
-      const userId = sessionData.session?.user?.id;
-      if (!userId) {
+      const user = sessionData.session?.user;
+      if (!user) {
         console.log(
           "[google-oauth] session missing after callback handling:",
           authParams,
@@ -168,7 +169,7 @@ export default function AuthCallback() {
         return;
       }
 
-      await routeForSession(userId);
+      await routeForSession(user);
     };
 
     void run();
